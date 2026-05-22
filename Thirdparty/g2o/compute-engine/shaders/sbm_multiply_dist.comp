@@ -1,0 +1,118 @@
+#version 460
+
+#extension GL_KHR_shader_subgroup_basic: enable
+#extension GL_KHR_shader_subgroup_arithmetic: enable
+
+layout (constant_id = 0) const int rows_a = 1;
+layout (constant_id = 1) const int cols_a = 1;
+
+layout (constant_id = 2) const int rows_b = 1;
+layout (constant_id = 3) const int cols_b = 1;
+
+layout (local_size_x_id = 4) in;
+
+layout (constant_id = 5) const bool add = true;
+layout (constant_id = 6) const bool transpose_right = false;
+layout (constant_id = 7) const int sg_per_mat = 1;
+layout (constant_id = 8) const int num_mat = 1;
+
+layout (push_constant) uniform PushConstants {
+    uint start;
+    uint n;
+} ml_info;
+
+struct MulList {
+    uint start;
+    uint num_items;
+    uint destination;
+};
+
+// Matrices stored in column-major format
+layout(std430,binding = 0) readonly buffer bufA { double a[]; };
+layout(std430, binding = 1) readonly buffer bufB { double b[]; };
+layout(std430, binding = 2) buffer bufC { double c[]; };
+layout(std430, binding = 3) readonly buffer bufMulLists {MulList mul_lists[]; };
+layout(std430, binding = 4) readonly buffer bufMulPairs {uvec2 mul_pairs[]; };
+
+const int szc = rows_a*cols_b;
+
+shared double values[num_mat][szc];
+
+void mulAB(const uint off_a, const uint off_b, const uint c_row, const uint c_col, inout double value) {
+
+    for (int v = 0; v < cols_a; v++) {
+        if (transpose_right) {
+            if (add) {
+                value += a[c_row+v*rows_a + off_a]*b[v*cols_b+c_col + off_b];
+            }
+            else {
+                value -= a[c_row+v*rows_a + off_a]*b[v*cols_b+c_col + off_b];
+            }
+        }
+        else {
+            if (add) {
+                value += a[c_row+v*rows_a + off_a]*b[v+c_col*rows_b + off_b];
+            }
+            else {
+                value -= a[c_row+v*rows_a + off_a]*b[v+c_col*rows_b + off_b];
+            }
+        }
+    }
+
+}
+
+// distribute n work items across a group
+uint distribute(inout uint start, uint work, uint num_groups, uint id) {
+    uint items = work / num_groups;
+    work -= items*num_groups;
+    start += items*id;
+
+    // evenly distribute the remainder as much as possible
+    if (work > 0) {
+        if (id < work) {
+            items++;
+        }
+        start += min(id, work); // if something was added, shift up by number of groups before
+    }
+    return items;
+
+}
+
+void main() {
+
+    // Should not be necessary if properly dispatched
+    const uint ml_idx = gl_WorkGroupID.x;
+    const uint elem = gl_SubgroupInvocationID + (gl_SubgroupID % sg_per_mat)*gl_SubgroupSize;
+    const uint mat_id = gl_SubgroupID/sg_per_mat;
+    uint off_c;
+
+    if (ml_idx < ml_info.n && elem < szc) {
+        // read total number of multiplications and distribute
+        const uint list_id = ml_info.start+ml_idx;
+        uint start = mul_lists[list_id].start;
+        const uint items = distribute(start, mul_lists[list_id].num_items, gl_NumSubgroups/sg_per_mat, mat_id);
+        off_c = mul_lists[list_id].destination;
+
+        const uint c_row = elem % rows_a;
+        const uint c_col = elem / rows_a;
+
+        double value = 0.0;
+        const uint end = start + items;
+        for (uint i = start; i < end; i++) {
+            const uvec2 pair = mul_pairs[i];
+            mulAB(pair.x, pair.y, c_row, c_col, value);
+        }
+
+        values[mat_id][elem] = value;
+    }
+    barrier();
+
+    if (ml_idx < ml_info.n && elem < szc && mat_id == 0) {
+
+        double sum = 0.0;
+        for (uint i = 0; i < num_mat; i++) {
+            sum += values[i][elem];
+        }
+        c[elem + off_c] += sum;        
+    }    
+}

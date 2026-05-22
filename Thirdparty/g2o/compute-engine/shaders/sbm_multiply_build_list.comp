@@ -1,0 +1,149 @@
+#version 460
+
+#extension GL_KHR_shader_subgroup_basic: enable
+#extension GL_KHR_shader_subgroup_arithmetic: enable
+#extension GL_KHR_shader_subgroup_ballot: enable
+
+layout (local_size_x_id = 0) in;
+
+layout (push_constant) uniform PushConstants {
+    uint n;
+} info;
+
+struct BlockInfo {
+    uint row;
+    uint col;
+    uint offset;
+};
+
+struct MulList {
+    uint start;
+    uint num_items;
+    uint destination;
+};
+
+struct ListAllocatorInfo {
+    uint list_idx;
+    uint pair_idx;
+};
+
+
+// Matrices stored in column-major format
+layout(std430, binding = 0) readonly buffer bufDestIdx { BlockInfo dest_idx[]; };
+
+layout(std430, binding = 1) readonly buffer bufLeftIdx { uint left_idx[]; };
+layout(std430, binding = 2) readonly buffer bufLeftOffsets { uint left_offsets[]; };
+layout(std430, binding = 3) readonly buffer bufLeftPtr { uint left_ptr[]; };
+
+layout(std430, binding = 4) readonly buffer bufRightIdx { uint right_idx[]; };
+layout(std430, binding = 5) readonly buffer bufRightOffsets { uint right_offsets[]; };
+layout(std430, binding = 6) readonly buffer bufRightPtr { uint right_ptr[]; };
+
+layout(std430, binding = 7) buffer bufMulLists { MulList mul_lists[]; };
+layout(std430, binding = 8) buffer bufMulPairs { uvec2 mul_pairs[]; };
+layout(std430, binding = 9) buffer bufListAllocator { ListAllocatorInfo allocator_info[]; };
+
+
+uint countListItems(const uint istart, const uint iend, const uint jstart, const uint jend) {
+    uint num_items = 0;
+    for (uint i = istart, j = jstart; i < iend && j < jend;) {
+        const uint l = left_idx[i];
+        const uint r = right_idx[j];
+
+        if (l == r) {
+            num_items++;
+            i++;
+            j++;
+        }
+        else if (l < r) {
+            i++;
+        }
+        else {
+            j++;
+        }
+    }
+    return num_items;
+}
+
+
+void writeListItems(uint pair_idx, 
+    const uint istart, const uint iend, const uint jstart, const uint jend) {
+
+    for (uint i = istart, j = jstart; i < iend && j < jend;) {
+        const uint l = left_idx[i];
+        const uint r = right_idx[j];
+
+        if (l == r) {
+            mul_pairs[pair_idx++] = uvec2(left_offsets[i], right_offsets[j]);
+            i++;
+            j++;
+        }
+        else if (l < r) {
+            i++;
+        }
+        else {
+            j++;
+        }
+    }
+}
+
+void main() {
+
+    // Should not be necessary if properly dispatched
+    const uint ml_idx = gl_GlobalInvocationID.x;
+    if (ml_idx < info.n) {
+
+        const uint block_row = dest_idx[ml_idx].row;
+        const uint block_col = dest_idx[ml_idx].col;
+        const uint off_c = dest_idx[ml_idx].offset;
+
+        const uint start = left_ptr[block_row];
+        const uint items = left_ptr[block_row+1]-start;
+
+        const uint end = start+items;
+        const uint jstart = right_ptr[block_col];
+        const uint jend = right_ptr[block_col+1];
+
+
+        const uint num_items = countListItems(start, end, jstart, jend);
+        // MulList list = MulList(0, num_items, off_c);
+        subgroupBarrier();
+        // Write work queues to memory
+        if (num_items > 0) {
+            // uint num_lists = subgroupAdd(1);
+            uint num_lists = subgroupBallotBitCount(subgroupBallot(true));
+            uint total_pairs = subgroupAdd(num_items);
+
+            // Allocate memory for the lists and pairs
+            uint list_idx = 0;
+            uint pair_idx = 0;
+            if (subgroupElect()) {
+                // Assume that there is enough memory
+                list_idx = atomicAdd(allocator_info[0].list_idx, num_lists);
+                pair_idx = atomicAdd(allocator_info[0].pair_idx, total_pairs);
+                
+
+            }
+            // Share with other active invocations
+            list_idx = subgroupBroadcastFirst(list_idx);
+            pair_idx = subgroupBroadcastFirst(pair_idx);
+
+
+            // Determine where each list writer should write
+            list_idx += subgroupExclusiveAdd(1);
+            pair_idx += subgroupExclusiveAdd(num_items);
+            
+
+            // Write list header
+            mul_lists[list_idx].start = pair_idx;
+            mul_lists[list_idx].num_items = num_items;
+            mul_lists[list_idx].destination = off_c;
+
+
+            // Write lists
+            writeListItems(pair_idx, start, end, jstart, jend);
+                    
+        }
+    }
+
+}

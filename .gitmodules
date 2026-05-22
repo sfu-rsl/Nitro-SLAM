@@ -1,0 +1,9 @@
+[submodule "Thirdparty/g2o/compute-engine"]
+	path = Thirdparty/g2o/compute-engine
+	url = git@github.com:sfu-rsl/compute-engine.git
+[submodule "Thirdparty/graphite"]
+	path = Thirdparty/graphite
+	url = git@github.com:sfu-rsl/graphite.git
+[submodule "Thirdparty/pose-graph-optimizer"]
+	path = Thirdparty/pose-graph-optimizer
+	url = git@github.com:sfu-rsl/compute-engine.git

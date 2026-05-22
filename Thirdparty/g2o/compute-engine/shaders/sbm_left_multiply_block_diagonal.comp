@@ -1,0 +1,58 @@
+#version 460
+
+layout (constant_id = 0) const int rows_a = 1;
+layout (constant_id = 1) const int cols_a = 1;
+
+layout (constant_id = 2) const int rows_b = 1;
+layout (constant_id = 3) const int cols_b = 1;
+
+layout (local_size_x_id = 4) in;
+
+layout (constant_id = 5) const bool add = true;
+
+layout (push_constant) uniform PushConstants {
+    uint start;
+    uint n;
+} ml_info;
+
+
+// Matrices stored in column-major format
+layout(binding = 0) readonly buffer bufA { double a[]; };
+layout(binding = 1) readonly buffer bufB { double b[]; };
+layout(binding = 2) writeonly buffer bufC { double c[]; };
+layout(binding = 3) readonly buffer bufMulPairs {uvec2 mul_pairs[]; };
+
+double mulAB(const uint off_a, const uint off_b, const uint ra, const uint cb) {
+
+    double value = 0.0;
+    for (int v = 0; v < cols_a; v++) {
+        value += a[ra+v*rows_a + off_a]*b[v+cb*rows_b + off_b];
+    }
+    if (add) {
+        return value;
+    }
+    else {
+        return -value;
+    }
+        
+}
+
+
+const int szc = rows_a*cols_b;
+void main() {
+
+    uint idx = gl_GlobalInvocationID.x / szc;
+    if (idx >= ml_info.n) {
+        return;
+    }
+
+    const uint elem = gl_GlobalInvocationID.x % szc;
+    const uint c_row = elem % rows_a;
+    const uint c_col = elem / rows_a;
+
+    const uvec2 pair = mul_pairs[ml_info.start + idx];
+
+    c[c_row + c_col*rows_a + pair.y] = mulAB(pair.x, pair.y, c_row, c_col);
+
+
+}

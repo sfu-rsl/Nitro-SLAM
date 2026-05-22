@@ -1,0 +1,39 @@
+#version 460
+
+layout (local_size_x_id = 0) in;
+layout (constant_id = 1) const int rows = 1;
+layout (constant_id = 2) const bool backup = true;
+layout (constant_id = 3) const bool set = true;
+
+layout (push_constant) uniform PushConstants {
+    uint items;
+    uint id_offset;
+    uint backup_offset;
+} info;
+
+layout(binding = 0) buffer bufU { double blocks[]; };
+layout(binding = 1) buffer bufV { double previous[]; };
+layout(binding = 2) readonly buffer bufOffsets { uint offsets[]; };
+layout(binding = 3) readonly buffer bufLambda { double lambda[]; };
+
+void main() {
+
+    if (gl_GlobalInvocationID.x < info.items) {
+        const uint block_id = gl_GlobalInvocationID.x/rows;
+        const uint col = gl_GlobalInvocationID.x % rows;
+        const uint block_offset = offsets[block_id+info.id_offset] + rows*(col) + col;
+        const uint backup_offset = gl_GlobalInvocationID.x + info.backup_offset;
+
+        if (set) {
+            if (backup) {
+                previous[backup_offset] = blocks[block_offset];
+            }
+            blocks[block_offset] += lambda[0];        
+        }
+        else {
+            blocks[block_offset] = previous[backup_offset];
+        }
+
+    }
+
+}

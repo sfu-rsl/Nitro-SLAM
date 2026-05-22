@@ -1,0 +1,17 @@
+#version 460
+
+layout (local_size_x_id = 0) in;
+
+layout (push_constant) uniform PushConstants {
+    double value;
+    uint size;
+} info;
+
+layout(binding = 0) writeonly buffer bufV { double v[]; };
+
+void main() {
+    const uint id = gl_GlobalInvocationID.x;
+    if (id < info.size) {
+        v[id] = info.value;
+    }
+}

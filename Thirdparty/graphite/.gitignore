@@ -1,0 +1,7 @@
+build
+problem-*.txt
+.cache
+docs/html
+docs/latex
+docs/xml
+docs/sphinx

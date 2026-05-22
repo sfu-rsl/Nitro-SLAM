@@ -1,0 +1,27 @@
+#version 460
+
+layout (local_size_x_id = 0) in;
+layout (constant_id = 1) const int rows = 1;
+layout (constant_id = 2) const int cols = 1;
+
+const int num_elements = rows*cols;
+
+layout (push_constant) uniform PushConstants {
+    uint num_blocks;
+    uint start;
+} info;
+
+layout(binding = 0) buffer bufSrc { double src[]; };
+layout(binding = 1) buffer bufDest { double dest[]; };
+layout(binding = 2) readonly buffer bufOffsets { uvec2 offsets[]; };
+
+void main() {
+
+    const uint block_id = gl_GlobalInvocationID.x/num_elements;
+
+    if (block_id < info.num_blocks) {
+        const uint element = gl_GlobalInvocationID.x % num_elements;
+        const uvec2 rw_pair = offsets[block_id+info.start] + element;
+        dest[rw_pair.y] = src[rw_pair.x];
+    }
+}

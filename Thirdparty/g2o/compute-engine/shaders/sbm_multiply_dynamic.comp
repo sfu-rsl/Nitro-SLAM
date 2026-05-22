@@ -1,0 +1,157 @@
+#version 460
+
+#extension GL_KHR_shader_subgroup_basic: enable
+#extension GL_KHR_shader_subgroup_arithmetic: enable
+#extension GL_KHR_shader_subgroup_ballot: enable
+
+layout (constant_id = 0) const int rows_a = 1;
+layout (constant_id = 1) const int cols_a = 1;
+
+layout (constant_id = 2) const int rows_b = 1;
+layout (constant_id = 3) const int cols_b = 1;
+
+layout (local_size_x_id = 4) in;
+
+layout (constant_id = 5) const bool add = true;
+layout (constant_id = 6) const bool transpose_right = false;
+layout (constant_id = 7) const int sg_per_mat = 1;
+layout (constant_id = 8) const int num_mat = 1;
+
+layout (push_constant) uniform PushConstants {
+    uint start;
+    uint n;
+} multiply_info;
+
+
+// Matrices stored in column-major format
+layout(std430, binding = 0) readonly buffer bufDestIdx { uint dest_idx[]; };
+layout(std430, binding = 1) buffer bufDestData { double dest_data[]; };
+
+layout(std430, binding = 2) readonly buffer bufLeftIdx { uint left_idx[]; };
+layout(std430, binding = 3) readonly buffer bufLeftOffsets { uint left_offsets[]; };
+layout(std430, binding = 4) readonly buffer bufLeftPtr { uint left_ptr[]; };
+layout(std430, binding = 5) readonly buffer bufLeftData { double left_data[]; };
+
+layout(std430, binding = 6) readonly buffer bufRightIdx { uint right_idx[]; };
+layout(std430, binding = 7) readonly buffer bufRightOffsets { uint right_offsets[]; };
+layout(std430, binding = 8) readonly buffer bufRightPtr { uint right_ptr[]; };
+layout(std430, binding = 9) readonly buffer bufRightData { double right_data[]; };
+
+// const uint szml = 3;
+const uint dest_info_size = 3;
+const int szc = rows_a*cols_b;
+
+shared double values[num_mat][szc];
+
+void mulAB(const uint off_a, const uint off_b, const uint c_row, const uint c_col, inout double value) {
+
+    for (int v = 0; v < cols_a; v++) {
+        if (transpose_right) {
+            if (add) {
+                value += left_data[c_row+v*rows_a + off_a]*right_data[v*cols_b+c_col + off_b];
+            }
+            else {
+                value -= left_data[c_row+v*rows_a + off_a]*right_data[v*cols_b+c_col + off_b];
+            }
+        }
+        else {
+            if (add) {
+                value += left_data[c_row+v*rows_a + off_a]*right_data[v+c_col*rows_b + off_b];
+            }
+            else {
+                value -= left_data[c_row+v*rows_a + off_a]*right_data[v+c_col*rows_b + off_b];
+            }
+        }
+    }
+
+}
+
+// distribute n work items across a group
+uint distribute(inout uint start, uint work, uint num_groups, uint id) {
+    uint items = work / num_groups;
+    work -= items*num_groups;
+    start += items*id;
+
+    // evenly distribute the remainder as much as possible
+    if (work > 0) {
+        if (id < work) {
+            items++;
+        }
+        start += min(id, work); // if something was added, shift up by number of groups before
+    }
+    return items;
+
+}
+
+uint get_row(uint idx) {
+    return dest_idx[idx*dest_info_size];
+}
+
+uint get_col(uint idx) {
+    return dest_idx[idx*dest_info_size+1];
+}
+
+uint get_offset(uint idx) {
+    return dest_idx[idx*dest_info_size+2];
+}
+
+void main() {
+
+    // Should not be necessary if properly dispatched
+    const uint ml_idx = gl_WorkGroupID.x;
+    const uint mat_id = gl_SubgroupID/sg_per_mat;
+    const uint elem = gl_SubgroupInvocationID + (gl_SubgroupID % sg_per_mat)*gl_SubgroupSize;
+
+    const uint c_row = elem % rows_a;
+    const uint c_col = elem / rows_a;
+    uint off_c;
+
+    if (ml_idx < multiply_info.n && elem < szc) {
+        // get num blocks in row (actual may be less)
+        const uint block_row = get_row(gl_WorkGroupID.x);
+        const uint block_col = get_col(gl_WorkGroupID.x);
+
+        uint start = left_ptr[block_row];
+        uint num_items = left_ptr[block_row+1]-start;
+
+        uint items = distribute(start, num_items, gl_NumSubgroups/sg_per_mat, mat_id);
+
+
+        off_c = get_offset(gl_WorkGroupID.x);
+
+
+        double value = 0.0;
+        const uint end = start+items;
+        const uint jstart = right_ptr[block_col];
+        const uint jend =  right_ptr[block_col+1];
+        uint j = jstart;
+
+        for (uint i = start; i < end && j < jend;) {
+            const uint l = left_idx[i];
+            const uint r = right_idx[j];
+
+            if (l == r) {
+                mulAB(left_offsets[i], right_offsets[j], c_row, c_col, value);
+                i++;
+                j++;
+            }
+            else if (l < r) {
+                i++;
+            }
+            else {
+                j++;
+            }
+        }
+
+        values[mat_id][elem] = value;
+    }
+    barrier();
+
+    if (ml_idx < multiply_info.n && elem < szc && mat_id == 0) {
+        double sum = 0.0;
+        for (uint i = 0; i < num_mat; i++) {
+            sum += values[i][elem];
+        }
+        dest_data[c_row + c_col*rows_a + off_c] += sum;        
+    }    
+}

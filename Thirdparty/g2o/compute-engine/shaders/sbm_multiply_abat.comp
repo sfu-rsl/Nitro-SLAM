@@ -1,0 +1,105 @@
+#version 460
+
+layout (constant_id = 0) const int rows_a = 1;
+layout (constant_id = 1) const int cols_a = 1;
+
+layout (constant_id = 2) const int rows_b = 1;
+layout (constant_id = 3) const int cols_b = 1;
+
+layout (local_size_x_id = 4) in;
+
+layout (constant_id = 5) const bool add = true;
+
+layout (push_constant) uniform PushConstants {
+    uint start;
+    uint n;
+} ml_info;
+
+struct MulList {
+    uint start;
+    uint num_items;
+    uint destination;
+};
+
+
+// Matrices stored in column-major format
+layout(std430,binding = 0) readonly buffer bufA { double a[]; };
+layout(std430, binding = 1) readonly buffer bufB { double b[]; };
+layout(std430, binding = 2) buffer bufC { double c[]; };
+layout(std430, binding = 3) readonly buffer bufMulLists {MulList mul_lists[]; };
+layout(std430, binding = 4) readonly buffer bufMulPairs {uvec2 mul_pairs[]; };
+
+
+const int szc = rows_a*rows_a;
+const int szab = rows_a*cols_b;
+
+shared double mat_ab[rows_a][cols_b];
+
+
+void mulAB(const uint off_a, const uint off_b, const uint a_row, const uint b_col) {
+
+    // first calculate AB
+    double ab = 0.0;
+    for (int v = 0; v < cols_a; v++) {
+        ab += a[a_row+v*rows_a + off_a]*b[v+b_col*rows_b + off_b];
+    }
+
+    const uint elem = a_row+b_col*rows_a;
+    mat_ab[a_row][b_col] = ab;
+}
+
+double mulABAT(const uint off_a, const uint c_row, const uint c_col) {
+
+    double value = 0.0;
+
+    // now calculate (AB)*(A^T)
+    for (int v = 0; v < cols_b; v++) {
+        value += mat_ab[c_row][v]*a[c_col+v*rows_a + off_a];
+    }
+
+    return value;
+
+}
+
+void main() {
+
+    const uint ml_idx = gl_WorkGroupID.x;
+
+    const uint elem = gl_LocalInvocationID.x;
+
+    const uint list_id = ml_info.start+ml_idx;
+    const uint start = mul_lists[list_id].start;
+    const uint items = mul_lists[list_id].num_items;
+
+    const uint off_c = mul_lists[list_id].destination;
+
+    const uint c_row = elem % rows_a;
+    const uint c_col = elem / rows_a;
+
+    const uint a_row = c_row;
+    const uint b_col = c_col;
+
+    double value = 0.0;
+    for (uint i = 0; i < items; i++) {
+        const uvec2 pair = mul_pairs[start+i];
+        // multiply
+        if (elem < szab) {
+            mulAB(pair.x, pair.y, a_row, b_col);
+        }
+        barrier();
+        if (elem < szc) {
+            value += mulABAT(pair.x, c_row, c_col);
+        }
+        barrier();
+    }
+
+    if (elem < szc) {
+        if (!add) {
+            value = -value;
+        }
+
+        c[c_row + c_col*rows_a + off_c] += value;
+    }
+
+
+}

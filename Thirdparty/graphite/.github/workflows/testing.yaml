@@ -1,0 +1,34 @@
+name: Build Graphite & Run Tests
+
+on:
+  push:
+    branches: ["master"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: [self-hosted]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y doxygen graphviz git
+          sudo apt-get install -y cudss-cuda-12 libeigen3-dev clang-format
+ 
+      - name: Build Graphite
+        run: cmake -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTS=ON -DCMAKE_CUDA_ARCHITECTURES=87 -B build .  && cmake --build build
+
+      - name: Run circle example
+        run: build/circle
+
+      # - name: Run bal example
+      #   run: build/bal
+
+      - name: Run tests
+        run: build/tests

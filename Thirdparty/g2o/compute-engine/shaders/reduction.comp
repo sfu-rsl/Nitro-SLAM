@@ -1,0 +1,52 @@
+#version 460
+
+#extension GL_KHR_shader_subgroup_basic: enable
+#extension GL_KHR_shader_subgroup_arithmetic: enable
+
+layout (local_size_x_id = 0) in;
+layout (constant_id = 1) const int num_subgroups = 1;
+
+layout (push_constant) uniform PushConstants {
+    uint size;
+} reduce_info;
+
+// Array to be reduced
+layout(binding = 0) buffer bufIn { double data_in[]; };
+layout(binding = 1) buffer bufOut { double data_out[]; };
+
+shared double s[num_subgroups];
+
+void main() {
+    const uint n = reduce_info.size;
+    uint idx = gl_GlobalInvocationID.x;
+    double sum = 0.0;
+
+    uint stride = gl_WorkGroupSize.x*gl_NumWorkGroups.x;
+    while (idx < n) {
+        sum += data_in[idx];
+        idx += stride;
+    }
+
+    double total = subgroupAdd(sum);
+    if (subgroupElect()) {
+        s[gl_SubgroupID] = total;
+    }
+
+    memoryBarrierShared();
+    barrier();
+
+    if (gl_SubgroupID == 0) {
+        uint j = gl_SubgroupInvocationID;
+        double sum2 = 0.0;
+        while (j < gl_NumSubgroups) { // shared array size
+            sum2 += s[j];
+            j += gl_SubgroupSize;
+        }
+        // combine and write
+        double total2 = subgroupAdd(sum2);
+        if (subgroupElect()) {
+            data_out[gl_WorkGroupID.x] = total2;
+        }
+    }
+
+}

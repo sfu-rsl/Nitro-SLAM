@@ -1,0 +1,29 @@
+#version 460
+
+#extension GL_KHR_shader_subgroup_basic: enable
+#extension GL_KHR_shader_subgroup_ballot: enable
+
+layout (local_size_x_id = 0) in;
+layout (constant_id = 1) const bool add = true;
+
+
+layout (push_constant) uniform PushConstants {
+    uint size;
+} info;
+
+layout(binding = 0) readonly buffer bufU { double u[]; };
+layout(binding = 1) readonly buffer bufV { double v[]; };
+layout(binding = 2) writeonly buffer bufW { double w[]; };
+layout(binding = 3) readonly buffer bufA { double a[]; };
+
+void main() {
+    const uint id = gl_GlobalInvocationID.x;
+    if (id < info.size) {
+        if (add) {
+            w[id] = u[id] + a[0]*v[id];
+        }
+        else {
+            w[id] = u[id] - a[0]*v[id];
+        }
+    }
+}
