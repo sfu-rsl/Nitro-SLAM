@@ -1,160 +1,102 @@
-# TurboMap
+# ?-SLAM
 
-**TurboMap** is a **GPU-accelerated and CPU-optimized local mapping module** for **ORB-SLAM3**. It speeds up the most time-consuming parts of local mapping by offloading key operations to the GPU and optimizing the rest on the CPU.
+A unified, high-performance Visual-Inertial SLAM framework that integrates state-of-the-art GPU parallelization, system-level pipelining, and graph optimization techniques into **ORB-SLAM3**. 
 
-TurboMap accelerates the following components:
-- 🔹 **Search for Triangulation** — implemented with custom CUDA kernels  
-- 🔹 **Map-Point Fusion** — GPU-accelerated with CUDA  
-- 🔹 **Local Keyframe Culling** — optimized on CPU  
-- 🔹 **Local Bundle Adjustment** — uses an existing GPU-accelerated backend ([compute-engine](https://github.com/sfu-rsl/compute-engine) and [gpu-block-solver](https://github.com/sfu-rsl/gpu-block-solver))
+This repository consolidates the optimization capabilities of four pioneering accelerated SLAM projects to maximize tracking throughput, minimize latency, and improve global consistency across resource-constrained and high-throughput environments.
 
-In our tests, **TurboMap** maintained the same accuracy as the original **ORB-SLAM3** system while achieving the following performance gains:
-- ⚡ **1.3× speedup** on the **EuRoC dataset**  
-- ⚡ **1.6× speedup** on the **TUM-VI dataset**
+---
 
-We evaluated TurboMap using **stereo-inertial configurations** on both **desktop** and **embedded platforms**. The machine specifications used for testing are as follows:
+## 🚀 Integrated Frameworks, Attributions & Papers
 
-<div align="center">
-<table>
-  <thead>
-    <tr>
-      <th>Machine</th>
-      <th>Specs</th>
-    </tr>
-  </thead>
-  <tbody>
-    <tr>
-      <td>Desktop</td>
-      <td>
-        20-core Intel Core i7-12700K CPU @ 5.0 GHz <br>
-        NVIDIA RTX 3090 GPU (10496-core) <br>
-        64 GB RAM
-      </td>
-    </tr>
-    <tr>
-      <td>Xavier NX</td>
-      <td>
-        6-core ARM Carmel CPU @ 1.4 GHz <br>
-        NVIDIA Volta GPU (384-core) <br>
-        8 GB RAM
-      </td>
-    </tr>
-  </tbody>
-</table>
+This project is built upon the contributions of the following upstream repositories and academic publications from the **SFU Robotics and Systems Laboratory (RSL)**:
 
-<strong>Table 1: Machine Specifications</strong>
-</div>
+| Module | Core Responsibility | Upstream Repository | Academic Paper Link |
+| :--- | :--- | :--- | :--- |
+| **ORB-SLAM3** | Baseline Visual-Inertial SLAM Engine | [UZ-SLAMLab/ORB_SLAM3](https://github.com/UZ-SLAMLab/ORB_SLAM3) | [IEEE T-RO 2021](https://ieeexplore.ieee.org/document/9440682) |
+| **FastTrack** | Front-end tracking and feature extraction acceleration | [sfu-rsl/FastTrack](https://github.com/sfu-rsl/FastTrack) | [IROS 2025](https://ieeexplore.ieee.org/document/11247316) |
+| **TurboMap** | Global mapping concurrency and database optimization | [sfu-rsl/TurboMap](https://github.com/sfu-rsl/TurboMap) | [arXiv](https://arxiv.org/abs/2511.02036) |
+| **FastLoop** | High-speed loop closure and backend tracking | [sfu-rsl/FastLoop](https://github.com/sfu-rsl/FastLoop) | [arXiv](https://arxiv.org/abs/2603.17201) |
+| **Graphite** | GPU-accelerated graph optimization backend layers | [sfu-rsl/graphite](https://github.com/sfu-rsl/graphite) | [ICRA 2026](https://arxiv.org/abs/2509.26581) |
 
-<br>
+---
 
-The following diagram shows the data flow of the local mapping process in TurboMap, with CPU-side components at the top, GPU-side components at the bottom, arrows indicating data transfers between modules, and a persistent keyframe storage maintained on the GPU:
+## 🛠️ Execution & Experimentation Scripts
 
-<p align="center">
-  <img src="https://github.com/sfu-rsl/TurboMap/blob/main/TurboMap_Local_Mapping_Overview.png" alt="Tracking In FastTrack">
-</p>
-<p align="center"><strong>Figure 1: Local Mapping Overview in TurboMap</strong></p>
+The repository includes an automated evaluation pipeline via execution scripts located in the root directory. These scripts manage optimization flags, handle fine-grained kernel execution configurations, and automatically resolve dataset-specific paths for both the **EuRoC** and **TUM-VI** benchmarks.
 
-<br>
+### 1. Batch Experiments (`run_experiments.sh`)
+Use this script to run multi-iteration, multi-dataset benchmark suites across a specific permutation of enabled modules.
 
-⏳ TurboMap has been submitted for publication at [ICRA 2026](https://2026.ieee-icra.org/). You can check out the paper [here](https://arxiv.org/abs/2511.02036).
-
-🚀 You can also check out our related project, [FastTrack](https://github.com/sfu-rsl/FastTrack), which this work builds upon and which has been accepted for publication at IROS 2025.
-
-# 2. Prerequisites
-We have tested the library in **Ubuntu 22.04** and **20.04**, but it should be easy to compile in other platforms. A powerful computer (e.g. i7) will ensure real-time performance and provide more stable and accurate results.
-
-## C++14 Compiler
-You need C++14 installed to build and run TurboMap.
-
-## Cuda
-We have tested the library with **Cuda 12.5**. Download and install instructions can be found at: https://docs.nvidia.com/cuda/cuda-installation-guide-linux/.
-
-## OpenCV
-We use [OpenCV](http://opencv.org) to manipulate images and features. Dowload and install instructions can be found at: http://opencv.org. **Required at leat 4.4.0**.
-
-## Eigen3
-Required by g2o (see below). Download and install instructions can be found at: http://eigen.tuxfamily.org. **Required at least 3.1.0**.
-
-## Pangolin
-We use [Pangolin](https://github.com/stevenlovegrove/Pangolin) for visualization and user interface. Download and install instructions can be found at: https://github.com/stevenlovegrove/Pangolin.
-
-Pangolin avoids to use Eigen in CUDA. To compile this project, guards in line 475 of glsl.hpp and 47 of glsl.h should be commented. Checkout [this issue](https://github.com/stevenlovegrove/Pangolin/issues/814) in ORB-SLAM3 github issues. 
-
-## DBoW2 and g2o (Included in Thirdparty folder)
-We use modified versions of the [DBoW2](https://github.com/dorian3d/DBoW2) library to perform place recognition and [g2o](https://github.com/RainerKuemmerle/g2o) library to perform non-linear optimizations. Both modified libraries (which are BSD) are included in the *Thirdparty* folder.
-
-## Python
-Required to calculate the alignment of the trajectory with the ground truth. **Required Numpy module**.
-
-* (win) http://www.python.org/downloads/windows
-* (deb) `sudo apt install libpython2.7-dev`
-* (mac) preinstalled with osx
-
-## Compute-engine Dependencies
-TurboMap relies on an external library to accelerate Local Bundle Adjustment (LBA). Make sure to install its dependencies, listed [here](https://github.com/sfu-rsl/compute-engine#building).
-
-# 3. Building TurboMap 
-
-Clone the repository:
-```
-git clone git@github.com:sfu-rsl/FastTrack.git
+```bash
+./run_experiments.sh <FastTrack[0|1]> <TurboMap[0|1]> <FastLoop[0|1]> <version> <num_iterations>
 ```
 
-After cloning, follow the instructions [here](https://github.com/sfu-rsl/gpu-block-solver/blob/master/INTEGRATION.md) to download and install the accelerated GPU block solver. Note that some of the instructions have already been applied (like the changes in cmake), so you don't have to do them again.
-
-Our system is based on ORB-SLAM3 and ORB-SLAM3 provides a script `build.sh` to build the *Thirdparty* libraries and *ORB-SLAM3*. Please make sure you have installed all required dependencies (see section 2). Execute:
-```
-cd TurboMap
-chmod +x build.sh
-./build.sh
+**Example:** To benchmark a combination of FastTrack and TurboMap for 3 iterations under version tag v1.0:
+```bash
+./run_experiments.sh 1 1 0 v1.0 3
 ```
 
-This will create **libORB_SLAM3.so**  at *lib* folder and the executables in *Examples* folder.
+> 💡 **Note:** By default, this script runs benchmarks against a targeted subset of datasets. You can add more sequences, as mentioned in the script, to run comprehensive evaluations across all EuRoC and TUM-VI sequences.
 
-# 4. Running TurboMap
-## EuRoC Examples
-[EuRoC dataset](http://projects.asl.ethz.ch/datasets/doku.php?id=kmavvisualinertialdatasets) was recorded with two pinhole cameras and an inertial sensor. We provide an example script to launch EuRoC sequences in all the sensor configurations.
+### 2. Single Sequence Evaluation (`run_script.sh`)
+Use this script to run an isolated experiment on a specific dataset sequence with optional, fine-grained control over GPU kernel configurations.
 
-1. Download a sequence (ASL format) from http://projects.asl.ethz.ch/datasets/doku.php?id=kmavvisualinertialdatasets
-
-2. Open the script "euroc_eval_examples.sh" in the **Examples** directory of the project. Change **pathDatasetEuroc** variable to point to the directory where the dataset has been uncompressed. 
-
-3. Execute the following script to run a single sequence:
-```
-./run_script.sh <dataset_name> <[0] for ORB-SLAM3, [1] for FastTrack, [2] for TurboMap, [3] for FastTrack & TurboMap> <[0] for STDOUT output, [1] for file output> <version> <kernel_status1 [kernel_status2]>
+```bash
+./run_script.sh <dataset_name> <FastTrack[0|1]> <TurboMap[0|1]> <FastLoop[0|1]> <output[0=stdout|1=file]> <version> [kernel_status1] [kernel_status2] [kernel_status3]
 ```
 
-The arguments **kernel_status1** and **kernel_status2** enable or disable FastTrack and TurboMap kernels.
+#### Positional Arguments:
+* `dataset_name`: Name of the targeted sequence (e.g., `MH01`, `room3`, `corridor1`).
+* `FastTrack[0|1]`: Toggle tracking acceleration front-end.
+* `TurboMap[0|1]`: Toggle local mapping acceleration.
+* `FastLoop[0|1]`: Toggle loop closure backend acceleration.
+* `output`: `0` pipes engine output directly to `stdout`; `1` redirects standard streams to a log file within the results directory.
+* `version`: Custom string identifier or identifier sequence (e.g., `v1.0.0`).
+* `[kernel_statusX]`: *(Optional)* Bitmask strings to selectively toggle internal algorithmic sub-kernels for debugging or ablation studies.
 
-TurboMap kernel status uses four digits:
-1) Triangulation search on GPU
-2) Map-point fusion on GPU
-3) Keyframe culling on CPU
-4) Local bundle adjustment (LBA) on GPU
+#### Default Kernel Bitmasks:
+If not explicitly passed, the framework defaults to fully operational bitmasks for activated components:
+* **FastTrack:** `11110`
+* **TurboMap:** `1111`
+* **FastLoop:** `11111`
 
-Example: kernel_status1 = 1110 enables all except LBA. Omit this argument to enable all.
+Each digit position within a passed bitmask acts as a binary switch (`1` to enable, `0` to disable) for a specific algorithmic sub-kernel or routine:
 
-FastTrack kernel status uses five digits:
-1) ORB extraction on GPU
-2) Stereo matching on GPU
-3) Search local points on GPU
-4) Pose estimation on GPU
-5) Pose optimization on/off
+##### FastTrack (5-Digit Configuration)
+1. **1**xxxx : ORB feature extraction acceleration on GPU.
+2. x**1**xxx : Stereo feature matching optimization on GPU.
+3. xx**1**xx : Local map points search acceleration on GPU.
+4. xxx**1**x : Camera pose estimation acceleration on GPU.
+5. xxxx**1** : Tracking pose optimization on/off toggle.
 
-Example: kernel_status1 = 11110 enables all accelerations and disables pose optimization. Omit this argument to enable all.
+##### TurboMap (4-Digit Configuration)
+1. **1**xxx : Map-point triangulation search acceleration on GPU.
+2. x**1**xx : Map-point fusion acceleration on GPU.
+3. xx**1**x : Redundant keyframe culling optimization on CPU.
+4. xxx**1** : Local Bundle Adjustment (LBA) solver execution on GPU.
 
-To run FastTrack and TurboMap together, use mode 3. In this mode, kernel_status1 controls FastTrack and kernel_status2 controls TurboMap.
+##### FastLoop (5-Digit Configuration)
+1. **1**xxxx : Sim3 projection search/validation acceleration on GPU.
+2. x**1**xxx : Relative pose and loop transformation correction on GPU.
+3. xx**1**xx : Loop fusion window and duplicate map-point merging on GPU.
+4. xxx**1**x : Pose Graph Optimization (PGO) backend engine on GPU.
+5. xxxx**1** : Global Full Bundle Adjustment (BA) optimization layer execution.
 
-4. Alternatively, you can use this command to run multiple sequences multiple times, with all of the optimizations enabled:
+---
+---
+
+## 📂 Results & Statistics Directory Tree
+
+The pipeline dynamically generates an organized directory hierarchy for data parsing and visualization utilities. The folder naming convention automatically mirrors your active compilation switches:
+
 ```
-./run_experiments.sh <[0] for ORB-SLAM3, [1] for FastTrack, [2] for TurboMap, [3] for FastTrack & TurboMap> <version> <num_iterations>
+./Results/
+└── <System_Name>/                  # e.g., FastTrack&TurboMap, ORB-SLAM3, etc.
+    └── <Kernel_Bitmasks>/          # e.g., 11110-1111 (Only appends for active modules)
+        └── <Dataset_Name>/         # e.g., room3/
+            └── <Version_Tag>/      # e.g., v1.0.0/
+                ├── ostream.txt     # Captured stdout logs (if output=1)
+                └── [Trajectory/Accuracy Stat Outputs]
 ```
 
-## TUM-VI Examples
-[TUM-VI dataset](https://vision.in.tum.de/data/datasets/visual-inertial-dataset) was recorded with two fisheye cameras and an inertial sensor.
-
-1. Download a sequence from https://vision.in.tum.de/data/datasets/visual-inertial-dataset and uncompress it.
-
-2. Open the script "tum_vi_examples.sh" in the root of the project. Change **pathDatasetTUM_VI** variable to point to the directory where the dataset has been uncompressed. 
-
-3. Execute it like the EuRoC dataset.
+---
