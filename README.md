@@ -1,4 +1,4 @@
-# ?-SLAM
+# Nitro-SLAM
 
 A unified, high-performance Visual-Inertial SLAM framework that integrates state-of-the-art GPU parallelization, system-level pipelining, and graph optimization techniques into **ORB-SLAM3**. 
 
