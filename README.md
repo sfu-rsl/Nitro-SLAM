@@ -1,18 +1,17 @@
 # Nitro-SLAM
 
-A unified, high-performance Visual-Inertial SLAM framework that integrates state-of-the-art GPU parallelization, system-level pipelining, and graph optimization techniques into **ORB-SLAM3**. 
+A unified, high-performance Visual-Inertial SLAM framework that integrates GPU parallelization, system-level pipelining, and graph optimization techniques into [ORB-SLAM3](https://github.com/UZ-SLAMLab/ORB_SLAM3). 
 
-This repository consolidates the optimization capabilities of four pioneering accelerated SLAM projects to maximize tracking throughput, minimize latency, and improve global consistency across resource-constrained and high-throughput environments.
+This repository consolidates the optimization capabilities of four accelerated SLAM projects from SFU RSL (Reliable Systems Lab) to maximize tracking throughput, minimize latency, and improve global consistency across resource-constrained and high-throughput environments.
 
 ---
 
 ## 🚀 Integrated Frameworks, Attributions & Papers
 
-This project is built upon the contributions of the following upstream repositories and academic publications from the **SFU Robotics and Systems Laboratory (RSL)**:
+This project integrates the following academic publications from the **SFU Reliable Systems Lab (RSL)**:
 
 | Module | Core Responsibility | Upstream Repository | Academic Paper Link |
 | :--- | :--- | :--- | :--- |
-| **ORB-SLAM3** | Baseline Visual-Inertial SLAM Engine | [UZ-SLAMLab/ORB_SLAM3](https://github.com/UZ-SLAMLab/ORB_SLAM3) | [IEEE T-RO 2021](https://ieeexplore.ieee.org/document/9440682) |
 | **FastTrack** | Front-end tracking and feature extraction acceleration | [sfu-rsl/FastTrack](https://github.com/sfu-rsl/FastTrack) | [IROS 2025](https://ieeexplore.ieee.org/document/11247316) |
 | **TurboMap** | Global mapping concurrency and database optimization | [sfu-rsl/TurboMap](https://github.com/sfu-rsl/TurboMap) | [arXiv](https://arxiv.org/abs/2511.02036) |
 | **FastLoop** | High-speed loop closure and backend tracking | [sfu-rsl/FastLoop](https://github.com/sfu-rsl/FastLoop) | [arXiv](https://arxiv.org/abs/2603.17201) |
