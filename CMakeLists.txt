@@ -100,6 +100,7 @@ src/Map.cc
 src/MapDrawer.cc
 src/Optimizer.cc
 src/Optimizer.cu
+src/LocalBA.cu
 src/Frame.cc
 src/KeyFrameDatabase.cc
 src/Sim3Solver.cc
@@ -198,6 +199,8 @@ include/Kernels/CudaWrappers/CudaKeyPoint.h
 include/Kernels/SearchByProjectionKernel.h
 include/Kernels/SearchAndFuseKernel.h
 include/GPUPose.h
+include/GPUTypes.h
+include/GPUImu.h
 include/PGOTypes.h
 include/PGOInterface.h
 )
