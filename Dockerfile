@@ -1,6 +1,6 @@
 # FROM nvidia/cuda:11.8.0-runtime-ubuntu22.04
 # FROM nvidia/cuda:12.6.3-runtime-ubuntu22.04
-FROM nvidia/cuda:12.8.1-runtime-ubuntu22.04
+FROM nvidia/cuda:12.8.2-runtime-ubuntu22.04
 # FROM ubuntu:22.04
 ENV NVIDIA_DRIVER_CAPABILITIES=all
 ENV NVIDIA_VISIBLE_DEVICES=all
@@ -16,13 +16,13 @@ libavcodec-dev libavutil-dev libavformat-dev libswscale-dev libavdevice-dev
 
 # Install other ORB-SLAM3 and CUDA dependencies
 RUN DEBIAN_FRONTEND=noninteractive TZ=Etc/UTC apt-get -y install tzdata
-RUN apt-get -y install libopencv-dev libopencv-core-dev libeigen3-dev libboost-serialization-dev libssl-dev 
+RUN apt-get update && apt-get -y install libopencv-dev libopencv-core-dev libeigen3-dev libboost-serialization-dev libssl-dev 
 
 # RUN apt-get -y install nvidia-cuda-toolkit nvidia-cuda-dev nvidia-cuda-gdb
 
 # Install CUDA Toolkit 12.6
 # RUN apt-get -y install cuda-toolkit-12-6 cuda-gdb-12-6
-RUN apt-get -y install cuda-toolkit-12-8 cuda-gdb-12-8 cudss-cuda-12
+RUN apt-get update && apt-get -y install cuda-toolkit-12-8 cuda-gdb-12-8 cudss-cuda-12
 
 # ORB-SLAM3 Stuff
 # Install pangolin
