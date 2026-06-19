@@ -5,12 +5,59 @@
 #include <graphite/vector.hpp>
 #include <graphite/loss.hpp>
 #include <graphite/solver/eigen.hpp>
+#include <graphite/solver/eigen_schur.hpp>
+
 #include <graphite/optimizer/levenberg_marquardt.hpp>
 #include "PGOInterface.h"
 
 namespace ORB_SLAM3 {
 
-    namespace OptimizerGPU {
+namespace OptimizerGPU {
+
+
+template <typename FP, typename Camera, size_t max_cameras>
+static std::array<Camera*, max_cameras> get_cameras(KeyFrame* pKFi, std::unordered_map<GeometricCamera*, Camera*>& cameras){
+    std::array<Camera*, max_cameras> cams = {nullptr, nullptr};
+    constexpr size_t num_params = Camera::parameter_size;
+    if (cameras.find(pKFi->mpCamera) == cameras.end()) {
+        Camera* cam;
+        cudaMallocManaged(&cam, sizeof(Camera));
+        cudaDeviceSynchronize();
+        // Initialize the camera with placement new
+        std::array<FP, num_params> cam_params;
+        for (size_t i = 0; i < cam_params.size(); i++) {
+            cam_params[i] = pKFi->mpCamera->getParameter(i);
+        }
+
+        // new (cam) Camera(cam_params);
+        *cam = Camera(cam_params);
+        cameras[pKFi->mpCamera] = cam;
+        cams[0] = cam;
+    }
+    else {
+        cams[0] = cameras[pKFi->mpCamera];
+    }
+    if (pKFi->mpCamera2) {
+        if (cameras.find(pKFi->mpCamera2) == cameras.end()) {
+            Camera* cam;
+            cudaMallocManaged(&cam, sizeof(Camera));
+            cudaDeviceSynchronize();
+            std::array<FP, num_params> cam_params;
+            for (size_t i = 0; i < cam_params.size(); i++) {
+                cam_params[i] = pKFi->mpCamera2->getParameter(i);
+            }
+            // new (cam) Camera(cam_params);
+            *cam = Camera(cam_params);
+
+            cameras[pKFi->mpCamera2] = cam;
+            cams[1] = cam;
+        }
+        else {
+            cams[1] = cameras[pKFi->mpCamera2];
+        }
+    }
+    return cams;
+};
 
 void LocalInertialBA(KeyFrame *pKF, bool *pbStopFlag, Map *pMap, int& num_fixedKF, int& num_OptKF, int& num_MPs, int& num_edges, bool bLarge, bool bRecInit)
 {
