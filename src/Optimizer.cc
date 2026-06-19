@@ -2543,6 +2543,7 @@ void Optimizer::LocalInertialBA(KeyFrame *pKF, bool *pbStopFlag, Map *pMap, int&
     g2o::SparseOptimizer optimizer;
     g2o::OptimizationAlgorithmLevenberg* solver;
     
+    /*
     if (MappingKernelController::LBAOnGPU) {
         auto linearSolver = new compute::LDLTSolver<double>();
         g2o::BlockSolver2X * solver_ptr = new g2o::BlockSolver2X(engine, linearSolver);
@@ -2553,6 +2554,12 @@ void Optimizer::LocalInertialBA(KeyFrame *pKF, bool *pbStopFlag, Map *pMap, int&
         g2o::BlockSolverX * solver_ptr = new g2o::BlockSolverX(linearSolver);
         solver = new g2o::OptimizationAlgorithmLevenberg(solver_ptr);
     }
+    */
+
+    // Always on CPU (we check mapping controller flag in the local mapping module)
+    g2o::BlockSolverX::LinearSolverType * linearSolver = new g2o::LinearSolverEigen<g2o::BlockSolverX::PoseMatrixType>();
+    g2o::BlockSolverX * solver_ptr = new g2o::BlockSolverX(linearSolver);
+    solver = new g2o::OptimizationAlgorithmLevenberg(solver_ptr);
 
     if(bLarge)
         solver->setUserLambdaInit(1e-2); // to avoid iterating for finding optimal lambda

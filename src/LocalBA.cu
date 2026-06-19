@@ -1,14 +1,15 @@
 #pragma once
 #include "Optimizer.h"
-#include "GPUTypes.h"
-#include "PGOTypes.h"
+
 #include <graphite/vector.hpp>
 #include <graphite/loss.hpp>
-#include <graphite/solver/eigen.hpp>
+// #include "GPUPose.h"
+#include "GPUTypes.h"
+// #include "PGOTypes.h"
 #include <graphite/solver/eigen_schur.hpp>
-
 #include <graphite/optimizer/levenberg_marquardt.hpp>
-#include "PGOInterface.h"
+
+
 
 namespace ORB_SLAM3 {
 
@@ -59,7 +60,10 @@ static std::array<Camera*, max_cameras> get_cameras(KeyFrame* pKFi, std::unorder
     return cams;
 };
 
-void LocalInertialBA(KeyFrame *pKF, bool *pbStopFlag, Map *pMap, int& num_fixedKF, int& num_OptKF, int& num_MPs, int& num_edges, bool bLarge, bool bRecInit)
+
+
+template <typename Camera>
+void LocalInertialBAInternal(KeyFrame *pKF, bool *pbStopFlag, Map *pMap, int& num_fixedKF, int& num_OptKF, int& num_MPs, int& num_edges, bool bLarge, bool bRecInit)
 {
     using namespace graphite;
     using namespace gpu;
@@ -232,7 +236,7 @@ void LocalInertialBA(KeyFrame *pKF, bool *pbStopFlag, Map *pMap, int& num_fixedK
     // TODO: Find a better way to allocate these vertices
     // Simplify this and assume stereo cameras only with only pinhole model
     // using Camera = PinholeCamera<FP>;
-    using Camera = KannalaBrandt8Camera<FP>;
+    // using Camera = KannalaBrandt8Camera<FP>;
     constexpr size_t max_cameras = 2;
     using Pose = ImuCamPose<FP, Camera>;
 
@@ -791,7 +795,7 @@ void LocalInertialBA(KeyFrame *pKF, bool *pbStopFlag, Map *pMap, int& num_fixedK
     options.optimization_level = optimization_level;
     options.streams = &streams;
     options.stop_flag = pbStopFlag;
-    options.verbose = true;
+    options.verbose = false;
 
     std::cout << "LIBA OPTIMIZING!" << std::endl;
     optimizer::levenberg_marquardt2<FP, SP>(&graph, &options);
@@ -897,7 +901,7 @@ void LocalInertialBA(KeyFrame *pKF, bool *pbStopFlag, Map *pMap, int& num_fixedK
         // VertexPose* VP = static_cast<VertexPose*>(optimizer.vertex(pKFi->mnId));
         const Pose* pose = pose_desc.get_vertex(pKFi->mnId);
         // Sophus::SE3f Tcw(VP->estimate().Rcw[0].cast<float>(), VP->estimate().tcw[0].cast<float>());
-        Sophus::SE3f Tcw(pose->Rcw[0].cast<float>(), pose->tcw[0].cast<float>());
+        Sophus::SE3f Tcw(pose->Rcw[0].template cast<float>(), pose->tcw[0].template cast<float>());
         pKFi->SetPose(Tcw);
         pKFi->mnBALocalForKF=0;
 
@@ -927,7 +931,7 @@ void LocalInertialBA(KeyFrame *pKF, bool *pbStopFlag, Map *pMap, int& num_fixedK
         // VertexPose* VP = static_cast<VertexPose*>(optimizer.vertex(pKFi->mnId));
         // Sophus::SE3f Tcw(VP->estimate().Rcw[0].cast<float>(), VP->estimate().tcw[0].cast<float>());
         const auto VP = pose_desc.get_vertex(pKFi->mnId);
-        Sophus::SE3f Tcw(VP->Rcw[0].cast<float>(), VP->tcw[0].cast<float>());
+        Sophus::SE3f Tcw(VP->Rcw[0].template cast<float>(), VP->tcw[0].template cast<float>());
 
         pKFi->SetPose(Tcw);
         pKFi->mnBALocalForKF=0;
@@ -958,6 +962,17 @@ void LocalInertialBA(KeyFrame *pKF, bool *pbStopFlag, Map *pMap, int& num_fixedK
 }
 
 
+
+void LocalInertialBA(KeyFrame *pKF, bool *pbStopFlag, Map *pMap, int& num_fixedKF, int& num_OptKF, int& num_MPs, int& num_edges, bool bLarge, bool bRecInit) {
+    using namespace gpu;
+    if (pKF->mpCamera->GetType() == ORB_SLAM3::GeometricCamera::CAM_PINHOLE) {
+        OptimizerGPU::LocalInertialBAInternal<PinholeCamera<double>>(pKF, pbStopFlag, pMap, num_fixedKF, num_OptKF, num_MPs, num_edges, bLarge, bRecInit);
     }
+    else {
+        OptimizerGPU::LocalInertialBAInternal<KannalaBrandt8Camera<double>>(pKF, pbStopFlag, pMap, num_fixedKF, num_OptKF, num_MPs, num_edges, bLarge, bRecInit);
+    }
+}
+
+}
 
 }
