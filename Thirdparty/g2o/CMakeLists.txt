@@ -88,8 +88,8 @@ ${g2o_SOURCE_DIR}/stuff
 ${G2O_EIGEN3_INCLUDE})
 
 # new
-add_compile_definitions(SPDLOG_ACTIVE_LEVEL=5)
-add_subdirectory(compute-engine)
+# add_compile_definitions(SPDLOG_ACTIVE_LEVEL=5)
+# add_subdirectory(compute-engine)
 
 # Include the subdirectories
 ADD_LIBRARY(g2o ${G2O_LIB_TYPE}
@@ -180,10 +180,10 @@ g2o/stuff/string_tools.cpp
 g2o/stuff/property.cpp       
 g2o/stuff/property.h       
 # new
-g2o/gpu/BAStats.hpp
-g2o/gpu/BAStats.cpp
-g2o/gpu/block_solver2.h
-g2o/gpu/block_solver2.hpp
+# g2o/gpu/BAStats.hpp
+# g2o/gpu/BAStats.cpp
+# g2o/gpu/block_solver2.h
+# g2o/gpu/block_solver2.hpp
 )
 # new
-target_link_libraries(g2o compute)
+# target_link_libraries(g2o compute)

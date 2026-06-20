@@ -18,7 +18,7 @@
 
 
 #include "Optimizer.h"
-#include "Thirdparty/g2o/g2o/gpu/block_solver2.h"
+// #include "Thirdparty/g2o/g2o/gpu/block_solver2.h"
 #include "Kernels/MappingKernelController.h"
 
 #include <complex>
@@ -50,6 +50,7 @@ static std::unique_ptr<ORB_SLAM3::PoseGraphOptimizerInterface> pose_graph_optimi
 namespace ORB_SLAM3
 {
 
+/*
 static compute::ComputeEngine* engine = nullptr;
 
 void initialize_compute_engine() {
@@ -67,6 +68,7 @@ void destroy_compute_engine() {
     delete engine;
     engine = nullptr;
 }
+*/
 
 void init_pgo(unsigned int max_poses, unsigned int max_edges) {
     if (!pose_graph_optimizer) {

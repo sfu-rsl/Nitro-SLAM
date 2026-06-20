@@ -64,15 +64,11 @@ ${PROJECT_SOURCE_DIR}/Thirdparty/Sophus
 ${EIGEN3_INCLUDE_DIR}
 ${Pangolin_INCLUDE_DIRS}
 ${CMAKE_CUDA_TOOLKIT_INCLUDE_DIRECTORIES}
-# new
-${PROJECT_SOURCE_DIR}/Thirdparty/g2o/compute-engine/src/include
-${PROJECT_SOURCE_DIR}/Thirdparty/g2o/compute-engine/external/kompute/src/include
-${PROJECT_SOURCE_DIR}/Thirdparty/g2o/compute-engine/external/kompute/external/VulkanMemoryAllocator/include
-)
-
+# new - don't need these anymore (used for Vulkan LBA)
 # ${PROJECT_SOURCE_DIR}/Thirdparty/g2o/compute-engine/src/include
 # ${PROJECT_SOURCE_DIR}/Thirdparty/g2o/compute-engine/external/kompute/src/include
 # ${PROJECT_SOURCE_DIR}/Thirdparty/g2o/compute-engine/external/kompute/external/VulkanMemoryAllocator/include
+)
 
 add_subdirectory(Thirdparty/graphite)
 set(BUILD_EXAMPLES OFF)
@@ -237,8 +233,8 @@ ${PROJECT_SOURCE_DIR}/Thirdparty/g2o/lib/libg2o.so
 -lcrypto
 OpenMP::OpenMP_CXX
 # new
-compute
-fmt::fmt
+# compute # disable this because we don't use Vulkan LBA anymore
+# fmt::fmt
 graphite
 )
 
