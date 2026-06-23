@@ -1,9 +1,0 @@
-out/
-.vscode/settings.json
-.vscode/
-build/
-*.spv
-tmp_kp_shader.comp
-shaders/build
-src/include/solver/shaders
-.cache/

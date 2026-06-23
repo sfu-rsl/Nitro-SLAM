@@ -1,3 +1,0 @@
-[submodule "external/kompute"]
-	path = external/kompute
-	url = https://github.com/sfu-rsl/kompute.git
