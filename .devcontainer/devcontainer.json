@@ -16,7 +16,7 @@
 
 	"mounts": [
 		"source=${localEnv:HOME}/datasets/slam/euroc,target=/root/SLAM/Datasets/EuRoc,type=bind,consistency=cached",
-		"source=${localEnv:HOME}/datasets/slam/tumvi/exported/euroc/512_16,target=/root/SLAM/Datasets/tumvi,type=bind,consistency=cached"
+		"source=${localEnv:HOME}/datasets/slam/tumvi,target=/root/SLAM/Datasets/tumvi,type=bind,consistency=cached"
   	]
   
 
