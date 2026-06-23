@@ -25,60 +25,10 @@ RUN apt-get update && apt-get -y install libopencv-dev libopencv-core-dev libeig
 RUN apt-get update && apt-get -y install cuda-toolkit-12-8 cuda-gdb-12-8 cudss-cuda-12
 
 # ORB-SLAM3 Stuff
-# Install pangolin
-RUN apt-get -y install python3-dev python3-setuptools
+# Install pangolin and python packages for eval
+RUN  apt-get update && apt-get -y install python3-dev python3-setuptools python3-pip && pip3 install matplotlib numpy pandas seaborn
 RUN git clone --branch v0.6 --recursive https://github.com/stevenlovegrove/Pangolin.git && \
 cd Pangolin && \
 cmake -B build -GNinja && \
 cmake --build build && \
 cd build && ninja install
-
-# Things for vulkan
-RUN apt-get update && apt-get -y install libvulkan-dev vulkan-tools glslang-tools python3-click xxd
-
-# may need to install libnvidia-gl with the right version for your system
-
-# COPY nvidia_icd.json /etc/vulkan/icd.d
-
-# From https://github.com/j3soon/docker-vulkan-runtime/blob/master/Dockerfile
-RUN cat > /etc/vulkan/icd.d/nvidia_icd.json <<EOF
-{
-    "file_format_version" : "1.0.0",
-    "ICD": {
-        "library_path": "libGLX_nvidia.so.0",
-        "api_version" : "1.3.194"
-    }
-}
-EOF
-RUN mkdir -p /usr/share/glvnd/egl_vendor.d && \
-    cat > /usr/share/glvnd/egl_vendor.d/10_nvidia.json <<EOF
-{
-    "file_format_version" : "1.0.0",
-    "ICD" : {
-        "library_path" : "libEGL_nvidia.so.0"
-    }
-}
-EOF
-RUN cat > /etc/vulkan/implicit_layer.d/nvidia_layers.json <<EOF
-{
-    "file_format_version" : "1.0.0",
-    "layer": {
-        "name": "VK_LAYER_NV_optimus",
-        "type": "INSTANCE",
-        "library_path": "libGLX_nvidia.so.0",
-        "api_version" : "1.3.194",
-        "implementation_version" : "1",
-        "description" : "NVIDIA Optimus layer",
-        "functions": {
-            "vkGetInstanceProcAddr": "vk_optimusGetInstanceProcAddr",
-            "vkGetDeviceProcAddr": "vk_optimusGetDeviceProcAddr"
-        },
-        "enable_environment": {
-            "__NV_PRIME_RENDER_OFFLOAD": "1"
-        },
-        "disable_environment": {
-            "DISABLE_LAYER_NV_OPTIMUS_1": ""
-        }
-    }
-}
-EOF
