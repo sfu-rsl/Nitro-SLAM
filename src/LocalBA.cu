@@ -797,9 +797,9 @@ void LocalInertialBAInternal(KeyFrame *pKF, bool *pbStopFlag, Map *pMap, int& nu
     options.stop_flag = pbStopFlag;
     options.verbose = false;
 
-    std::cout << "LIBA OPTIMIZING!" << std::endl;
+    // std::cout << "LIBA OPTIMIZING!" << std::endl;
     optimizer::levenberg_marquardt2<FP, SP>(&graph, &options);
-    std::cout << "LIBA OPTIMIZATION DONE!" << std::endl;
+    // std::cout << "LIBA OPTIMIZATION DONE!" << std::endl;
     // float err_end = optimizer.activeRobustChi2();
     // if(pbStopFlag)
     //     optimizer.setForceStopFlag(pbStopFlag);
