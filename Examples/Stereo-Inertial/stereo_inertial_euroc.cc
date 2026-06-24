@@ -227,6 +227,9 @@ int main(int argc, char **argv)
 
     int proccIm = 0;
 
+    size_t num_tracked = 0;
+    double track_total = 0.0;
+
     cv::Mat imLeft, imRight;
     for (seq = 0; seq<num_seq; seq++)
     {
@@ -279,6 +282,7 @@ int main(int argc, char **argv)
 
             // Pass the images to the SLAM system
             SLAM.TrackStereo(imLeft,imRight,tframe,vImuMeas);
+            num_tracked++;
 
     #ifdef COMPILEDWITHC11
             std::chrono::steady_clock::time_point t2 = std::chrono::steady_clock::now();
@@ -299,6 +303,7 @@ int main(int argc, char **argv)
             double ttrack= std::chrono::duration_cast<std::chrono::duration<double> >(t2 - t1).count();
 
             vTimesTrack[ni]=ttrack;
+            track_total += ttrack;
 
             // Wait to load the next frame
             double T=0;
@@ -320,6 +325,10 @@ int main(int argc, char **argv)
 
 
     }
+    std::cout << "Tracked " << num_tracked << " images in " << track_total << " seconds." << std::endl;
+    std::cout << "Frametime: " << (track_total / num_tracked) << std::endl;
+    std::cout << "FPS: " << (num_tracked / track_total) << std::endl;
+
     // Stop all threads
     SLAM.Shutdown();
 #ifdef REGISTER_TRACKING_STATS
