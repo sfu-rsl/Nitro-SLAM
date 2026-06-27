@@ -117,3 +117,4 @@ evaluation/TurboMap
 !Thirdparty/graphite
 
 *.nsys-rep
+.claude/settings.local.json
