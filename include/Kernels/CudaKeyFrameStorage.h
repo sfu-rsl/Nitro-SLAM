@@ -1,14 +1,12 @@
 #ifndef CUDA_KEYFRAME_STORAGE_H
 #define CUDA_KEYFRAME_STORAGE_H
 
-#include <vector>
-#include "KeyFrame.h"
-#include "CudaUtils.h"
-#include "CudaWrappers/CudaKeyFrame.h"
+#include <unordered_map>
 #include <mutex>
-#include <queue>
-
-#define CUDA_KEYFRAME_STORAGE_SIZE 2000
+#include "KeyFrame.h"
+#include "Kernels/CudaUtils.h"
+#include "Kernels/CudaWrappers/CudaKeyFrame.h"
+#include "Kernels/UnifiedChunkAllocator.h"
 
 namespace MAPPING_DATA_WRAPPER {
     class CudaKeyFrame;
@@ -19,8 +17,6 @@ namespace ORB_SLAM3 {
     class MapPoint;
 }
 
-using ckd_buffer_index_t = int;
-
 class CudaKeyFrameStorage {
     public:
         static void initializeMemory();
@@ -29,15 +25,14 @@ class CudaKeyFrameStorage {
         static void eraseCudaKeyFrame(ORB_SLAM3::KeyFrame* KF);
         static void printStorageKeyframes();
         static void addFeatureVector(long unsigned int KF_mnId, DBoW2::FeatureVector featVec);
+        static void prefetchToDevice();
         static void shutdown();
     public:
-        static MAPPING_DATA_WRAPPER::CudaKeyFrame *d_keyframes, *h_keyframes;
-        static std::unordered_map<long unsigned int, ckd_buffer_index_t> mnId_to_idx; 
+        static UnifiedChunkAllocator<MAPPING_DATA_WRAPPER::CudaKeyFrame> allocator;
+        static std::unordered_map<long unsigned int, MAPPING_DATA_WRAPPER::CudaKeyFrame*> mnId_to_kf;
         static int num_keyframes;
         static bool memory_is_initialized, memory_is_free;
-        static ckd_buffer_index_t first_free_idx;
         static std::mutex mtx;
-        static std::queue<ckd_buffer_index_t> free_idx;
 };
 
 #endif
