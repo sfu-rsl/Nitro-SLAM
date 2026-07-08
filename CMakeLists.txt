@@ -156,6 +156,7 @@ src/Optimizer.cu
 src/LocalBA.cu
 src/LIBA.cu
 src/FIBA.cu
+src/PoseOptimization.cu
 src/Frame.cc
 src/KeyFrameDatabase.cc
 src/Sim3Solver.cc
