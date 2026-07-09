@@ -3116,13 +3116,14 @@ bool Tracking::TrackLocalMap()
 
     if (TrackingKernelController::poseOptimizationRunStatus == 1) {
         int inliers;
-        if (!mpAtlas->isImuInitialized())
+        if (!mpAtlas->isImuInitialized()) {
             if (TrackingKernelController::is_active) {
                 OptimizerGPU::PoseOptimization(&mCurrentFrame);
             }
             else {
                 Optimizer::PoseOptimization(&mCurrentFrame);
             }
+        }
         else
         {
             if(mCurrentFrame.mnId<=mnLastRelocFrameId+mnFramesToResetIMU)
@@ -3140,8 +3141,11 @@ bool Tracking::TrackLocalMap()
                 // if(!mbMapUpdated && mState == OK) //  && (mnMatchesInliers>30))
                 if(!mbMapUpdated) //  && (mnMatchesInliers>30))
                 {
+                 std::cout << "Running Pose opt inertial frame!" << std::endl;
+
                     Verbose::PrintMess("TLM: PoseInertialOptimizationLastFrame ", Verbose::VERBOSITY_DEBUG);
                     if (TrackingKernelController::is_active) {
+                        std::cout << "graphite pose opt for inertial frame..." << std::endl;
                         inliers = OptimizerGPU::PoseInertialOptimizationLastFrame(&mCurrentFrame); // , !mpLastKeyFrame->GetMap()->GetIniertialBA1());
                     }
                     else {
