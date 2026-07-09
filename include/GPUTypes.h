@@ -484,15 +484,15 @@ typename PoseDescriptor> struct InertialConstraint {
       // Jacobians wrt Pose 2
       J.setZero();
       // rotation
-      J.block<3,3>(0,0) = invJr; // OK
+      J.template block<3,3>(0,0) = invJr; // OK
       // translation
-      J.block<3,3>(6,3) = Rbw1*Rwb2; // OK
+      J.template block<3,3>(6,3) = Rbw1*Rwb2; // OK
     }
     else {
       Eigen::Map<Eigen::Matrix<D, 9, 3>> J(jacobian);
       // Jacobians wrt Velocity 2
       J.setZero();
-      J.block<3,3>(3,0) = Rbw1; // OK
+      J.template block<3,3>(3,0) = Rbw1; // OK
     }
 
   }
