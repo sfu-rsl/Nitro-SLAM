@@ -3117,13 +3117,15 @@ bool Tracking::TrackLocalMap()
     if (TrackingKernelController::poseOptimizationRunStatus == 1) {
         int inliers;
         if (!mpAtlas->isImuInitialized())
-            Optimizer::PoseOptimization(&mCurrentFrame);
+            // Optimizer::PoseOptimization(&mCurrentFrame);
+            OptimizerGPU::PoseOptimization(&mCurrentFrame);
         else
         {
             if(mCurrentFrame.mnId<=mnLastRelocFrameId+mnFramesToResetIMU)
             {
                 Verbose::PrintMess("TLM: PoseOptimization ", Verbose::VERBOSITY_DEBUG);
-                Optimizer::PoseOptimization(&mCurrentFrame);
+                // Optimizer::PoseOptimization(&mCurrentFrame);
+                OptimizerGPU::PoseOptimization(&mCurrentFrame);
             }
             else
             {
