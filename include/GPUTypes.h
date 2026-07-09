@@ -520,4 +520,99 @@ using MonoConstraintDescriptor = graphite::FactorDescriptor<T, S, MonoConstraint
 template <typename T, typename S, typename L, typename C>
 using StereoConstraintDescriptor = graphite::FactorDescriptor<T, S, StereoConstraint<T, S, L, C>>;
 
+
+// ---- Pose-only constraints (fixed world point, optimize only pose) ----
+
+template <typename T>
+struct PoseOnlyData {
+    Vec3<T> Xw;
+    int cam_idx;
+};
+
+template <typename T, typename S, typename L, typename C>
+struct MonoConstraintOnlyPose {
+    static constexpr size_t dimension = 2;
+    using VertexDescriptors = std::tuple<PoseDescriptor<T, S, C>>;
+    using Observation = Vec2<T>;
+    using Data = PoseOnlyData<T>;
+    using Loss = L;
+    using Differentiation = DifferentiationMode::Manual;
+
+    using Pose = typename PoseDescriptor<T, S, C>::VertexType;
+
+    template <typename D>
+    hd_fn static void error(const Pose& VPose, const Observation& obs, const Data& d, D* e_ptr) {
+        Eigen::Map<Vec2<T>> e(e_ptr);
+        e = obs - VPose.Project(d.Xw, d.cam_idx);
+    }
+
+    template <typename D, size_t I>
+    hd_fn static void jacobian(const Pose& VPose, const Observation& obs, const Data& d, D* jac_ptr) {
+        const int cam_idx = d.cam_idx;
+        const Mat3<D>& Rcw = VPose.Rcw[cam_idx];
+        const Vec3<D>& tcw = VPose.tcw[cam_idx];
+        const Vec3<D> Xc = Rcw * d.Xw + tcw;
+        const Vec3<D> Xb = VPose.Rbc[cam_idx] * Xc + VPose.tbc[cam_idx];
+        const Mat3<D>& Rcb = VPose.Rcb[cam_idx];
+        const Eigen::Matrix<D, 2, 3> proj_jac = VPose.pCamera[cam_idx]->projectJac(Xc);
+
+        Eigen::Map<Eigen::Matrix<D, 2, 6>> J(jac_ptr);
+        Eigen::Matrix<T, 3, 6> SE3deriv;
+        T x = Xb(0), y = Xb(1), z = Xb(2);
+        SE3deriv << T(0), z, -y, T(1), T(0), T(0),
+                    -z, T(0), x, T(0), T(1), T(0),
+                     y, -x, T(0), T(0), T(0), T(1);
+        J = proj_jac * Rcb * SE3deriv;
+    }
+};
+
+template <typename T, typename S, typename L, typename C>
+struct StereoConstraintOnlyPose {
+    static constexpr size_t dimension = 3;
+    using VertexDescriptors = std::tuple<PoseDescriptor<T, S, C>>;
+    using Observation = Vec3<T>;
+    using Data = PoseOnlyData<T>;
+    using Loss = L;
+    using Differentiation = DifferentiationMode::Manual;
+
+    using Pose = typename PoseDescriptor<T, S, C>::VertexType;
+
+    template <typename D>
+    hd_fn static void error(const Pose& VPose, const Observation& obs, const Data& d, D* e_ptr) {
+        Eigen::Map<Vec3<T>> e(e_ptr);
+        e = obs - VPose.ProjectStereo(d.Xw, d.cam_idx);
+    }
+
+    template <typename D, size_t I>
+    hd_fn static void jacobian(const Pose& VPose, const Observation& obs, const Data& d, D* jac_ptr) {
+        const int cam_idx = d.cam_idx;
+        const Mat3<D>& Rcw = VPose.Rcw[cam_idx];
+        const Vec3<D>& tcw = VPose.tcw[cam_idx];
+        const Vec3<D> Xc = Rcw * d.Xw + tcw;
+        const Vec3<D> Xb = VPose.Rbc[cam_idx] * Xc + VPose.tbc[cam_idx];
+        const Mat3<D>& Rcb = VPose.Rcb[cam_idx];
+        const D bf = VPose.bf;
+        const D inv_z2 = D(1) / (Xc(2) * Xc(2));
+
+        Mat3<D> proj_jac;
+        proj_jac.template block<2, 3>(0, 0) = VPose.pCamera[cam_idx]->projectJac(Xc);
+        proj_jac.template block<1, 3>(2, 0) = proj_jac.template block<1, 3>(0, 0);
+        proj_jac(2, 2) += bf * inv_z2;
+
+        Eigen::Map<Eigen::Matrix<D, 3, 6>> J(jac_ptr);
+        Eigen::Matrix<T, 3, 6> SE3deriv;
+        T x = Xb(0), y = Xb(1), z = Xb(2);
+        SE3deriv << T(0), z, -y, T(1), T(0), T(0),
+                    -z, T(0), x, T(0), T(1), T(0),
+                     y, -x, T(0), T(0), T(0), T(1);
+        J = proj_jac * Rcb * SE3deriv;
+    }
+};
+
+template <typename T, typename S, typename L, typename C>
+using MonoConstraintOnlyPoseDescriptor = graphite::FactorDescriptor<T, S, MonoConstraintOnlyPose<T, S, L, C>>;
+
+template <typename T, typename S, typename L, typename C>
+using StereoConstraintOnlyPoseDescriptor = graphite::FactorDescriptor<T, S, StereoConstraintOnlyPose<T, S, L, C>>;
+
 }

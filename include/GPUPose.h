@@ -632,6 +632,43 @@ namespace gpu {
             DR.setIdentity();   
         }
 
+        ImuCamPose(ORB_SLAM3::Frame *pF, C** cameras) : its(0)
+        {
+            twb = pF->GetImuPosition().cast<T>();
+            Rwb = pF->GetImuRotation().cast<T>();
+
+            Sophus::SE3<float> Tcw = pF->GetPose();
+            tcw[0] = Tcw.translation().cast<T>();
+            Rcw[0] = Tcw.rotationMatrix().cast<T>();
+            tcb[0] = pF->mImuCalib.mTcb.translation().cast<T>();
+            Rcb[0] = pF->mImuCalib.mTcb.rotationMatrix().cast<T>();
+            Rbc[0] = Rcb[0].transpose();
+            tbc[0] = pF->mImuCalib.mTbc.translation().cast<T>();
+            if (cameras) {
+                pCamera[0] = cameras[0];
+            }
+            bf = pF->mbf;
+
+            if (cameras && cameras[1] && pF->mpCamera2)
+            {
+                Mat4<T> Trl = pF->GetRelativePoseTrl().matrix().cast<T>();
+                Rcw[1] = Trl.template block<3,3>(0,0) * Rcw[0];
+                tcw[1] = Trl.template block<3,3>(0,0) * tcw[0] + Trl.template block<3,1>(0,3);
+                tcb[1] = Trl.template block<3,3>(0,0) * tcb[0] + Trl.template block<3,1>(0,3);
+                Rcb[1] = Trl.template block<3,3>(0,0) * Rcb[0];
+                Rbc[1] = Rcb[1].transpose();
+                tbc[1] = -Rbc[1] * tcb[1];
+                pCamera[1] = cameras[1];
+                num_cams = 2;
+            }
+            else {
+                num_cams = 1;
+            }
+
+            Rwb0 = Rwb;
+            DR.setIdentity();
+        }
+
         ImuCamPose(Eigen::Matrix3d &_Rwc, Eigen::Vector3d &_twc, ORB_SLAM3::KeyFrame* pKF): its(0)
         {
             // This is only for posegrpah, we do not care about multicamera
