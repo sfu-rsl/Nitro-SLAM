@@ -109,6 +109,7 @@ public:
 namespace OptimizerGPU {
     int PoseOptimization(Frame *pFrame);
     int PoseInertialOptimizationLastKeyFrame(Frame *pFrame, bool bRecInit = false);
+    int PoseInertialOptimizationLastFrame(Frame *pFrame, bool bRecInit = false);
     void LocalInertialBA(KeyFrame* pKF, bool *pbStopFlag, Map *pMap, int& num_fixedKF, int& num_OptKF, int& num_MPs, int& num_edges, bool bLarge = false, bool bRecInit = false);
     // Same as LocalInertialBA, but built on top of the persistent optimizer in LIBAInterface.h
     // so that the allocations are reused between calls.

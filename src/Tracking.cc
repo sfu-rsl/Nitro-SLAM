@@ -3117,15 +3117,23 @@ bool Tracking::TrackLocalMap()
     if (TrackingKernelController::poseOptimizationRunStatus == 1) {
         int inliers;
         if (!mpAtlas->isImuInitialized())
-            // Optimizer::PoseOptimization(&mCurrentFrame);
-            OptimizerGPU::PoseOptimization(&mCurrentFrame);
+            if (TrackingKernelController::is_active) {
+                OptimizerGPU::PoseOptimization(&mCurrentFrame);
+            }
+            else {
+                Optimizer::PoseOptimization(&mCurrentFrame);
+            }
         else
         {
             if(mCurrentFrame.mnId<=mnLastRelocFrameId+mnFramesToResetIMU)
             {
                 Verbose::PrintMess("TLM: PoseOptimization ", Verbose::VERBOSITY_DEBUG);
-                // Optimizer::PoseOptimization(&mCurrentFrame);
-                OptimizerGPU::PoseOptimization(&mCurrentFrame);
+                if (TrackingKernelController::is_active) {
+                    OptimizerGPU::PoseOptimization(&mCurrentFrame);
+                }
+                else {
+                    Optimizer::PoseOptimization(&mCurrentFrame);
+                }
             }
             else
             {
@@ -3133,12 +3141,22 @@ bool Tracking::TrackLocalMap()
                 if(!mbMapUpdated) //  && (mnMatchesInliers>30))
                 {
                     Verbose::PrintMess("TLM: PoseInertialOptimizationLastFrame ", Verbose::VERBOSITY_DEBUG);
-                    inliers = Optimizer::PoseInertialOptimizationLastFrame(&mCurrentFrame); // , !mpLastKeyFrame->GetMap()->GetIniertialBA1());
+                    if (TrackingKernelController::is_active) {
+                        inliers = OptimizerGPU::PoseInertialOptimizationLastFrame(&mCurrentFrame); // , !mpLastKeyFrame->GetMap()->GetIniertialBA1());
+                    }
+                    else {
+                        inliers = Optimizer::PoseInertialOptimizationLastFrame(&mCurrentFrame); // , !mpLastKeyFrame->GetMap()->GetIniertialBA1());
+                    }
                 }
                 else
                 {
                     Verbose::PrintMess("TLM: PoseInertialOptimizationLastKeyFrame ", Verbose::VERBOSITY_DEBUG);
-                    inliers = OptimizerGPU::PoseInertialOptimizationLastKeyFrame(&mCurrentFrame); // , !mpLastKeyFrame->GetMap()->GetIniertialBA1());
+                    if (TrackingKernelController::is_active) {
+                        inliers = OptimizerGPU::PoseInertialOptimizationLastKeyFrame(&mCurrentFrame); // , !mpLastKeyFrame->GetMap()->GetIniertialBA1());
+                    }
+                    else {
+                        inliers = Optimizer::PoseInertialOptimizationLastKeyFrame(&mCurrentFrame); // , !mpLastKeyFrame->GetMap()->GetIniertialBA1());
+                    }
                 }
             }
         }

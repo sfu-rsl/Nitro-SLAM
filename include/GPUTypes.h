@@ -450,34 +450,34 @@ typename PoseDescriptor> struct InertialConstraint {
       // Jacobians wrt Pose 1
       J.setZero();
       // rotation
-      J.block<3,3>(0,0) = -invJr*Rwb2.transpose()*Rwb1; // OK
-      J.block<3,3>(3,0) = Sophus::SO3<D>::hat(Rbw1*(VV2 - VV1 - g*dt)).template cast<D>(); // OK
-      J.block<3,3>(6,0) = Sophus::SO3<D>::hat(Rbw1*(VP2.twb - VP1.twb
+      J.template block<3,3>(0,0) = -invJr*Rwb2.transpose()*Rwb1; // OK
+      J.template block<3,3>(3,0) = Sophus::SO3<D>::hat(Rbw1*(VV2 - VV1 - g*dt)).template cast<D>(); // OK
+      J.template block<3,3>(6,0) = Sophus::SO3<D>::hat(Rbw1*(VP2.twb - VP1.twb
                                                     - VV1*dt - 0.5*g*dt*dt)).template cast<D>(); // OK
       // translation
-      J.block<3,3>(6,3) = -Mat3<D>::Identity(); // OK
+      J.template block<3,3>(6,3) = -Mat3<D>::Identity(); // OK
     }
     else if constexpr (I == 1) {
       Eigen::Map<Eigen::Matrix<D, 9, 3>> J(jacobian);
       // Jacobians wrt Velocity 1
       J.setZero();
-      J.block<3,3>(3,0) = -Rbw1; // OK
-      J.block<3,3>(6,0) = -Rbw1*dt; // OK
+      J.template block<3,3>(3,0) = -Rbw1; // OK
+      J.template block<3,3>(6,0) = -Rbw1*dt; // OK
     }
     else if constexpr (I == 2) {
       Eigen::Map<Eigen::Matrix<D, 9, 3>> J(jacobian);
       // Jacobians wrt Gyro 1
       J.setZero();
-      J.block<3,3>(0,0) = -invJr*eR.transpose()*RightJacobianSO3<D>(mpInt->JRg*dbg)*mpInt->JRg; // OK
-      J.block<3,3>(3,0) = -mpInt->JVg; // OK
-      J.block<3,3>(6,0) = -mpInt->JPg; // OK
+      J.template block<3,3>(0,0) = -invJr*eR.transpose()*RightJacobianSO3<D>(mpInt->JRg*dbg)*mpInt->JRg; // OK
+      J.template block<3,3>(3,0) = -mpInt->JVg; // OK
+      J.template block<3,3>(6,0) = -mpInt->JPg; // OK
     }
     else if constexpr (I == 3) {
       Eigen::Map<Eigen::Matrix<D, 9, 3>> J(jacobian);
       // Jacobians wrt Accelerometer 1
       J.setZero();
-      J.block<3,3>(3,0) = -mpInt->JVa; // OK
-      J.block<3,3>(6,0) = -mpInt->JPa; // OK
+      J.template block<3,3>(3,0) = -mpInt->JVa; // OK
+      J.template block<3,3>(6,0) = -mpInt->JPa; // OK
     }
     else if constexpr (I == 4) {
       Eigen::Map<Eigen::Matrix<D, 9, 6>> J(jacobian);
@@ -498,9 +498,84 @@ typename PoseDescriptor> struct InertialConstraint {
   }
 };
 
-template <typename T, typename S, typename L, 
+template <typename T, typename S, typename L,
 typename PoseDescriptor>
 using InertialConstraintDescriptor = graphite::FactorDescriptor<T, S, InertialConstraint<T, S, L, PoseDescriptor>>;
+
+// IMU Prior Constraint — implements EdgePriorPoseImu: 15D residual over
+// (prev_pose, prev_vel, prev_gyrobias, prev_accbias) using a ConstraintPoseImu prior.
+template <typename T, typename S, typename L, typename PoseDescriptor>
+struct ImuPriorConstraint {
+    static constexpr size_t dimension = 15;
+    using VertexDescriptors = std::tuple<
+        PoseDescriptor,
+        VelocityDescriptor<T, S>,
+        GyroBiasDescriptor<T, S>,
+        AccBiasDescriptor<T, S>>;
+    using Observation = Empty;
+
+    struct Data {
+        Eigen::Matrix<T, 3, 3> Rwb;
+        Eigen::Matrix<T, 3, 1> twb;
+        Eigen::Matrix<T, 3, 1> vwb;
+        Eigen::Matrix<T, 3, 1> bg;
+        Eigen::Matrix<T, 3, 1> ba;
+    };
+
+    using Loss = L;
+    using Differentiation = DifferentiationMode::Manual;
+    using Pose = typename PoseDescriptor::VertexType;
+
+    template <typename D>
+    hd_fn static void error(
+        const Pose& pose, const Velocity<T>& vel,
+        const GyroBias<T>& gyrobias, const AccBias<T>& accbias,
+        const Data& data, D* residual)
+    {
+        Eigen::Map<Eigen::Matrix<D, 15, 1>> e(residual);
+        const Mat3<D> Rwb_p = data.Rwb.template cast<D>();
+        const Mat3<D> Rwb2  = pose.Rwb.template cast<D>();
+        const Mat3<D> dR    = Rwb_p.transpose() * Rwb2;
+        e.template segment<3>(0)  = LogSO3<D>(dR);
+        e.template segment<3>(3)  = Rwb_p.transpose() * (pose.twb.template cast<D>() - data.twb.template cast<D>());
+        e.template segment<3>(6)  = vel.template cast<D>() - data.vwb.template cast<D>();
+        e.template segment<3>(9)  = gyrobias.template cast<D>() - data.bg.template cast<D>();
+        e.template segment<3>(12) = accbias.template cast<D>() - data.ba.template cast<D>();
+    }
+
+    template <typename D, size_t I>
+    hd_fn static void jacobian(
+        const Pose& pose, const Velocity<T>& vel,
+        const GyroBias<T>& gyrobias, const AccBias<T>& accbias,
+        const Data& data, D* jac)
+    {
+        if constexpr (I == 0) {
+            Eigen::Map<Eigen::Matrix<D, 15, 6>> J(jac);
+            J.setZero();
+            const Mat3<D> Rwb_p = data.Rwb.template cast<D>();
+            const Mat3<D> Rwb2  = pose.Rwb.template cast<D>();
+            const Mat3<D> dR    = Rwb_p.transpose() * Rwb2;
+            const Vec3<D> er    = LogSO3<D>(dR);
+            J.template block<3,3>(0, 0) = InverseRightJacobianSO3(er);
+            J.template block<3,3>(3, 3) = Rwb_p.transpose() * Rwb2;
+        } else if constexpr (I == 1) {
+            Eigen::Map<Eigen::Matrix<D, 15, 3>> J(jac);
+            J.setZero();
+            J.template block<3,3>(6, 0) = Eigen::Matrix<D,3,3>::Identity();
+        } else if constexpr (I == 2) {
+            Eigen::Map<Eigen::Matrix<D, 15, 3>> J(jac);
+            J.setZero();
+            J.template block<3,3>(9, 0) = Eigen::Matrix<D,3,3>::Identity();
+        } else {
+            Eigen::Map<Eigen::Matrix<D, 15, 3>> J(jac);
+            J.setZero();
+            J.template block<3,3>(12, 0) = Eigen::Matrix<D,3,3>::Identity();
+        }
+    }
+};
+
+template <typename T, typename S, typename L, typename PoseDescriptor>
+using ImuPriorConstraintDescriptor = graphite::FactorDescriptor<T, S, ImuPriorConstraint<T, S, L, PoseDescriptor>>;
 
 template<typename T, typename S, typename L>
 using GyroRWConstraintDescriptor = graphite::FactorDescriptor<T, S, GyroRWConstraint<T, S, L>>;
