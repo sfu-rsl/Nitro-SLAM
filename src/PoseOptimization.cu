@@ -23,7 +23,6 @@ static std::array<Camera*, max_cameras> get_cameras(Frame* pF, std::unordered_ma
     if (cameras.find(pF->mpCamera) == cameras.end()) {
         Camera* cam;
         cudaMallocManaged(&cam, sizeof(Camera));
-        cudaDeviceSynchronize();
         std::array<FP, num_params> cam_params;
         for (size_t i = 0; i < cam_params.size(); i++) cam_params[i] = pF->mpCamera->getParameter(i);
         *cam = Camera(cam_params);
@@ -36,7 +35,6 @@ static std::array<Camera*, max_cameras> get_cameras(Frame* pF, std::unordered_ma
         if (cameras.find(pF->mpCamera2) == cameras.end()) {
             Camera* cam;
             cudaMallocManaged(&cam, sizeof(Camera));
-            cudaDeviceSynchronize();
             std::array<FP, num_params> cam_params;
             for (size_t i = 0; i < cam_params.size(); i++) cam_params[i] = pF->mpCamera2->getParameter(i);
             *cam = Camera(cam_params);
@@ -150,7 +148,7 @@ int PoseOptimizationInternal(Frame *pFrame)
 
     Graph<FP, SP> graph;
     EigenLDLTSolver<FP, SP> solver;
-    StreamPool streams(1);
+    StreamPool streams(4);
 
     auto pose_desc = PoseDescriptor<FP, SP, Camera>();
     pose_desc.reserve(1);
@@ -198,7 +196,7 @@ int PoseOptimizationInternal(Frame *pFrame)
         optimizer::LevenbergMarquardtOptions<FP, SP> options;
         options.solver = &solver;
         options.iterations = its[it];
-        options.initial_damping = 1e0;
+        // options.initial_damping = 1e0;
         options.optimization_level = 0;
         options.streams = &streams;
         options.stop_flag = nullptr;
@@ -280,6 +278,8 @@ int PoseInertialOptimizationLastKFInternal(Frame *pFrame, bool bRecInit)
     using SP = double;
     using Pose = gpu::ImuCamPose<FP, Camera>;
     using PoseDesc = PoseDescriptor<FP, SP, Camera>;
+
+    auto tpre0 = std::chrono::steady_clock::now();
 
     std::unordered_map<GeometricCamera*, Camera*> cameras;
     auto cams = get_cameras<FP, Camera, max_cameras>(pFrame, cameras);
@@ -387,13 +387,18 @@ int PoseInertialOptimizationLastKFInternal(Frame *pFrame, bool bRecInit)
 
     const int nInitialCorrespondences = nInitialMonoCorrespondences + nInitialStereoCorrespondences;
 
+    auto tpre1 = std::chrono::steady_clock::now();
+    std::cout << "PO Pre-Setup (vertices+correspondences) took " << std::chrono::duration_cast<std::chrono::duration<double,std::milli>>(tpre1 - tpre0).count() << " ms" << std::endl;
+
     // ---- Graphite graph setup ----
+    auto tsetup0 = std::chrono::steady_clock::now();
+
     const FP thHuberMono   = sqrt(FP(5.991));
     const FP thHuberStereo = sqrt(FP(7.815));
 
     Graph<FP, SP> graph;
     EigenLDLTSolver<FP, SP> solver;
-    StreamPool streams(1);
+    StreamPool streams(4);
 
     // 4 shared vertex descriptors. Each holds 2 vertices:
     //   id=0: KF vertex (fixed), id=1: frame vertex (unfixed)
@@ -474,7 +479,12 @@ int PoseInertialOptimizationLastKFInternal(Frame *pFrame, bool bRecInit)
     graph.add_factor_descriptor(&gyrorw_desc);
     graph.add_factor_descriptor(&accrw_desc);
 
+    auto tsetup1 = std::chrono::steady_clock::now();
+    std::cout << "PO Graph Setup took " << std::chrono::duration_cast<std::chrono::duration<double,std::milli>>(tsetup1 - tsetup0).count() << " ms" << std::endl;
+
     // ---- Optimization loop (4 iterations, decreasing chi2 thresholds) ----
+    auto topt0 = std::chrono::steady_clock::now();
+
     const float chi2Mono[4]   = {12.f, 7.5f, 5.991f, 5.991f};
     const float chi2Stereo[4] = {15.6f, 9.8f, 7.815f, 7.815f};
     const int   its[4]        = {10, 10, 10, 10};
@@ -492,12 +502,16 @@ int PoseInertialOptimizationLastKFInternal(Frame *pFrame, bool bRecInit)
         optimizer::LevenbergMarquardtOptions<FP, SP> options;
         options.solver           = &solver;
         options.iterations       = its[it];
-        options.initial_damping  = 1e0;
+        // options.initial_damping  = 1e0;
         options.optimization_level = 0;
         options.streams          = &streams;
         options.stop_flag        = nullptr;
         options.verbose          = false;
+
+        auto tg0 = std::chrono::steady_clock::now();
         optimizer::levenberg_marquardt2<FP, SP>(&graph, &options);
+        auto tg1 = std::chrono::steady_clock::now();
+        std::cout << "PO lm took " << std::chrono::duration_cast<std::chrono::duration<double,std::milli>>(tg1 - tg0).count() << " ms" << std::endl;
 
         nBad = 0;
         nInliers = nInliersMono = nInliersStereo = 0;
@@ -548,6 +562,9 @@ int PoseInertialOptimizationLastKFInternal(Frame *pFrame, bool bRecInit)
         if (nInliers + 3 < 10) break;
     }
 
+    auto topt1 = std::chrono::steady_clock::now();
+    std::cout << "PO Graph Optimization took " << std::chrono::duration_cast<std::chrono::duration<double,std::milli>>(topt1 - topt0).count() << " ms" << std::endl;
+
     // ---- Recovery: relax thresholds if too few inliers ----
     if (nInliers < 30 && !bRecInit) {
         nBad = 0;
@@ -575,7 +592,6 @@ int PoseInertialOptimizationLastKFInternal(Frame *pFrame, bool bRecInit)
     }
 
     // ---- Extract optimized pose, velocity, biases ----
-    cudaDeviceSynchronize();
 
     pFrame->SetImuPoseVelocity(
         frame_pose[0].Rwb.template cast<float>(),
@@ -592,6 +608,7 @@ int PoseInertialOptimizationLastKFInternal(Frame *pFrame, bool bRecInit)
     using MonoConstraint   = MonoConstraintOnlyPose<FP, SP, HuberLoss<FP, 2>, Camera>;
     using StereoConstraint = StereoConstraintOnlyPose<FP, SP, HuberLoss<FP, 3>, Camera>;
 
+    auto th0 =  std::chrono::steady_clock::now();
     Eigen::Matrix<double, 15, 15> H;
     H.setZero();
 
@@ -642,6 +659,10 @@ int PoseInertialOptimizationLastKFInternal(Frame *pFrame, bool bRecInit)
             H.block<6, 6>(0, 0) += J.transpose() * double(e.invSigma2) * J;
         }
     }
+        auto th1 =  std::chrono::steady_clock::now();
+
+         std::cout << "PO Hessian took " <<   std::chrono::duration_cast<std::chrono::duration<double,std::milli> >(th1 - th0).count() << " ms" << std::endl;
+
 
     pFrame->mpcpi = new ConstraintPoseImu(
         frame_pose[0].Rwb.template cast<double>(),
@@ -786,7 +807,7 @@ int PoseInertialOptimizationLastFInternal(Frame *pFrame, bool bRecInit)
 
     Graph<FP, SP> graph;
     EigenLDLTSolver<FP, SP> solver;
-    StreamPool streams(1);
+    StreamPool streams(4);
 
     // 4 shared vertex descriptors. id=0: prev frame (unfixed), id=1: curr frame (unfixed)
     PoseDesc pose_desc;
@@ -900,7 +921,7 @@ int PoseInertialOptimizationLastFInternal(Frame *pFrame, bool bRecInit)
         optimizer::LevenbergMarquardtOptions<FP, SP> options;
         options.solver           = &solver;
         options.iterations       = its[it];
-        options.initial_damping  = 1e0;
+        // options.initial_damping  = 1e0;
         options.optimization_level = 0;
         options.streams          = &streams;
         options.stop_flag        = nullptr;
@@ -983,7 +1004,6 @@ int PoseInertialOptimizationLastFInternal(Frame *pFrame, bool bRecInit)
     }
 
     // ---- Extract optimized state ----
-    cudaDeviceSynchronize();
 
     pFrame->SetImuPoseVelocity(
         curr_pose[0].Rwb.template cast<float>(),

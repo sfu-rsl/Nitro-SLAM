@@ -4773,11 +4773,18 @@ int Optimizer::PoseInertialOptimizationLastKeyFrame(Frame *pFrame, bool bRecInit
     int nInliersMono = 0;
     int nInliersStereo = 0;
     int nInliers = 0;
+
+    optimizer.setVerbose(true);
+    
     for(size_t it=0; it<4; it++)
     {
+                auto tg0 = std::chrono::steady_clock::now();
+
         optimizer.initializeOptimization(0);
         optimizer.optimize(its[it]);
-
+        auto tg1 = std::chrono::steady_clock::now();
+        std::cout << "PO lm (CPU) took " << std::chrono::duration_cast<std::chrono::duration<double,std::milli>>(tg1 - tg0).count() << " ms" << std::endl;
+        
         nBad = 0;
         nBadMono = 0;
         nBadStereo = 0;

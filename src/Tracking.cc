@@ -3141,26 +3141,33 @@ bool Tracking::TrackLocalMap()
                 // if(!mbMapUpdated && mState == OK) //  && (mnMatchesInliers>30))
                 if(!mbMapUpdated) //  && (mnMatchesInliers>30))
                 {
-                 std::cout << "Running Pose opt inertial frame!" << std::endl;
+                //  std::cout << "Running Pose opt inertial frame!" << std::endl;
 
-                    Verbose::PrintMess("TLM: PoseInertialOptimizationLastFrame ", Verbose::VERBOSITY_DEBUG);
-                    if (TrackingKernelController::is_active) {
-                        std::cout << "graphite pose opt for inertial frame..." << std::endl;
-                        inliers = OptimizerGPU::PoseInertialOptimizationLastFrame(&mCurrentFrame); // , !mpLastKeyFrame->GetMap()->GetIniertialBA1());
-                    }
-                    else {
-                        inliers = Optimizer::PoseInertialOptimizationLastFrame(&mCurrentFrame); // , !mpLastKeyFrame->GetMap()->GetIniertialBA1());
-                    }
+                //     Verbose::PrintMess("TLM: PoseInertialOptimizationLastFrame ", Verbose::VERBOSITY_DEBUG);
+                //     auto tpo0 =  std::chrono::steady_clock::now();
+                //     if (TrackingKernelController::is_active && false) {
+                //         std::cout << "graphite pose opt for inertial frame..." << std::endl;
+                //         inliers = OptimizerGPU::PoseInertialOptimizationLastFrame(&mCurrentFrame); // , !mpLastKeyFrame->GetMap()->GetIniertialBA1());
+                //     }
+                //     else {
+                //         inliers = Optimizer::PoseInertialOptimizationLastFrame(&mCurrentFrame); // , !mpLastKeyFrame->GetMap()->GetIniertialBA1());
+                //     }
+                //     auto tpo1 =  std::chrono::steady_clock::now();
+                //     std::cout << "PO for Inertial Frame took " <<   std::chrono::duration_cast<std::chrono::duration<double,std::milli> >(tpo1 - tpo0).count() << " ms" << std::endl;
                 }
                 else
                 {
                     Verbose::PrintMess("TLM: PoseInertialOptimizationLastKeyFrame ", Verbose::VERBOSITY_DEBUG);
-                    if (TrackingKernelController::is_active) {
+                    auto tpo0 =  std::chrono::steady_clock::now();
+                    if (TrackingKernelController::is_active && false) {
                         inliers = OptimizerGPU::PoseInertialOptimizationLastKeyFrame(&mCurrentFrame); // , !mpLastKeyFrame->GetMap()->GetIniertialBA1());
                     }
                     else {
                         inliers = Optimizer::PoseInertialOptimizationLastKeyFrame(&mCurrentFrame); // , !mpLastKeyFrame->GetMap()->GetIniertialBA1());
                     }
+                    auto tpo1 =  std::chrono::steady_clock::now();
+                    std::cout << "PO for Inertial KF took " <<   std::chrono::duration_cast<std::chrono::duration<double,std::milli> >(tpo1 - tpo0).count() << " ms" << std::endl;
+
                 }
             }
         }
