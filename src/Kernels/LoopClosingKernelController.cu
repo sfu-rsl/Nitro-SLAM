@@ -51,7 +51,7 @@ void LoopClosingKernelController::initializeKernels(){
     if (searchAndFuseOnGPU)
         mpSearchAndFuseKernel->initialize();
 
-    checkCudaError(cudaDeviceSynchronize(), "[LoopClosing Kernel Controller:] Failed to initialize kernels.");
+    checkCudaError(cudaStreamSynchronize(cudaStreamPerThread), "[LoopClosing Kernel Controller:] Failed to initialize kernels.");
     memory_is_initialized = true;
 }
 
@@ -81,8 +81,6 @@ void LoopClosingKernelController::shutdownKernels(bool _localMappingFinished, bo
         // mpSearchByBoWKernel->shutdown();
     }
     CudaUtils::shutdown();
-    cudaDeviceSynchronize();
-
 }
 
 void LoopClosingKernelController::saveKernelsStats(const std::string &file_path) {
@@ -150,8 +148,8 @@ int LoopClosingKernelController::launchSearchByBoWKernel(ORB_SLAM3::KeyFrame *pK
 void LoopClosingKernelController::launchWarmUp()
 {
     // cudaFree(0);
-    warmupKernel<<<1, 1>>>();
-    cudaDeviceSynchronize();
+    warmupKernel<<<1, 1, 0, cudaStreamPerThread>>>();
+    cudaStreamSynchronize(cudaStreamPerThread);
     std::cout << "[CUDA Warm-up] Completed GPU context initialization." << std::endl;
     return;
 }

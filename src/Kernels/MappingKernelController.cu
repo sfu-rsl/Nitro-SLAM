@@ -59,7 +59,7 @@ void MappingKernelController::initializeKernels(){
         ORB_SLAM3::initialize_compute_engine();
     */
 
-    checkCudaError(cudaDeviceSynchronize(), "[Mapping Kernel Controller:] Failed to initialize kernels.");
+    checkCudaError(cudaStreamSynchronize(cudaStreamPerThread), "[Mapping Kernel Controller:] Failed to initialize kernels.");
     memory_is_initialized = true;
 }
 
@@ -89,7 +89,6 @@ void MappingKernelController::shutdownKernels(bool _localMappingFinished, bool _
     }
 
     CudaUtils::shutdown();
-    cudaDeviceSynchronize();
 }
 
 void MappingKernelController::saveKernelsStats(const std::string &file_path){

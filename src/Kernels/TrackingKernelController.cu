@@ -67,7 +67,7 @@ void TrackingKernelController::initializeKernels(){
     TrackingStats::getInstance().searchLocalPoints_init_time = std::chrono::duration_cast<std::chrono::duration<double,std::milli> >(SLP_end - SLP_start).count();
     TrackingStats::getInstance().poseEstimation_init_time = std::chrono::duration_cast<std::chrono::duration<double,std::milli> >(PE_end - PE_start).count();
 #endif
-    checkCudaError(cudaDeviceSynchronize(), "[Tracking Kernel Controller:] Failed to initialize kernels.");
+    checkCudaError(cudaStreamSynchronize(cudaStreamPerThread), "[Tracking Kernel Controller:] Failed to initialize kernels.");
     memory_is_initialized = true;
 }
 
