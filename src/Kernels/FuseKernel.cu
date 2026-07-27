@@ -278,10 +278,11 @@ void FuseKernel::launch(ORB_SLAM3::KeyFrame *neighKF, const vector<ORB_SLAM3::Ma
 
     int blockSize = 256;
     int numBlocks = (numValidPoints + blockSize -1) / blockSize;
-    fuseKernel<<<numBlocks, blockSize>>>(d_currKFMapPoints, d_neighKF, numValidPoints, CudaUtils::cameraIsFisheye, Ow, Tcw, th, bRight, d_bestDists, d_bestIdxs);
+    const cudaStream_t stream = cudaStreamPerThread;
+    fuseKernel<<<numBlocks, blockSize, 0, stream>>>(d_currKFMapPoints, d_neighKF, numValidPoints, CudaUtils::cameraIsFisheye, Ow, Tcw, th, bRight, d_bestDists, d_bestIdxs);
 
     checkCudaError(cudaGetLastError(), "[fuseKernel:] Failed to launch kernel");
-    checkCudaError(cudaDeviceSynchronize(), "[fuseKernel:] cudaDeviceSynchronize failed after kernel launch");  
+    checkCudaError(cudaStreamSynchronize(stream), "[fuseKernel:] cudaStreamSynchronize failed after kernel launch");  
 
 #ifdef REGISTER_LOCAL_MAPPING_STATS
     std::chrono::steady_clock::time_point endKernel = std::chrono::steady_clock::now();
@@ -566,14 +567,14 @@ void FuseKernel::launchV2(std::vector<ORB_SLAM3::KeyFrame*> neighKFs, ORB_SLAM3:
     int keyFramesToProcessCount = CudaUtils::cameraIsFisheye ? neighKFSize*2 : neighKFSize;
     int blockSize = 256;
     int numBlocks = (numValidPoints*keyFramesToProcessCount + blockSize - 1) / blockSize;
-
-    fuseKernelV2<<<numBlocks, blockSize>>>(
+    const cudaStream_t stream = cudaStreamPerThread;
+    fuseKernelV2<<<numBlocks, blockSize, 0, stream>>>(
         d_currKFMapPoints, d_neighKFs, numValidPoints, neighKFSize, d_Ow, d_OwRight, d_Tcw, d_TcwRight,
         CudaUtils::cameraIsFisheye, th, d_bestDists, d_bestIdxs
     );
 
     checkCudaError(cudaGetLastError(), "[fuseKernelV2:] Failed to launch kernel");
-    checkCudaError(cudaDeviceSynchronize(), "[fuseKernelV2:] cudaDeviceSynchronize failed after kernel launch");  
+    checkCudaError(cudaStreamSynchronize(stream), "[fuseKernelV2:] cudaStreamSynchronize failed after kernel launch");  
 
 #ifdef REGISTER_LOCAL_MAPPING_STATS
     std::chrono::steady_clock::time_point endKernel = std::chrono::steady_clock::now();

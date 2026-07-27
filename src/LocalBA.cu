@@ -23,7 +23,6 @@ static std::array<Camera*, max_cameras> get_cameras(KeyFrame* pKFi, std::unorder
     if (cameras.find(pKFi->mpCamera) == cameras.end()) {
         Camera* cam;
         cudaMallocManaged(&cam, sizeof(Camera));
-        cudaDeviceSynchronize();
         // Initialize the camera with placement new
         std::array<FP, num_params> cam_params;
         for (size_t i = 0; i < cam_params.size(); i++) {
@@ -42,7 +41,6 @@ static std::array<Camera*, max_cameras> get_cameras(KeyFrame* pKFi, std::unorder
         if (cameras.find(pKFi->mpCamera2) == cameras.end()) {
             Camera* cam;
             cudaMallocManaged(&cam, sizeof(Camera));
-            cudaDeviceSynchronize();
             std::array<FP, num_params> cam_params;
             for (size_t i = 0; i < cam_params.size(); i++) {
                 cam_params[i] = pKFi->mpCamera2->getParameter(i);

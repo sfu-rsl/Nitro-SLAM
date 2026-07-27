@@ -274,12 +274,13 @@ int SearchAndFuseKernel::launch(std::vector<ORB_SLAM3::KeyFrame*> connectedKFs, 
 #endif
 
     int threads = 256;
+    const cudaStream_t stream = cudaStreamPerThread;
     int blocks = (connectedKFSize * numValidPoints + threads - 1) / threads;
-    searchAndFuseKernel<<<blocks, threads>>>(d_Ow, d_Tcw, d_KeyFrames, d_MapPoints, 
+    searchAndFuseKernel<<<blocks, threads, 0, stream>>>(d_Ow, d_Tcw, d_KeyFrames, d_MapPoints, 
                                     0, connectedKFSize, 0, numValidPoints, th, 
                                     d_bestDists, d_bestIdxs);
 
-    cudaDeviceSynchronize();
+    cudaStreamSynchronize(stream);
 
 #ifdef REGISTER_LOOP_CLOSING_STATS
     std::chrono::steady_clock::time_point endKernel = std::chrono::steady_clock::now();
