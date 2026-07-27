@@ -77,6 +77,8 @@ namespace TRACKING_DATA_WRAPPER
     void CudaFrame::setMemory(const ORB_SLAM3::Frame &F) {
         DEBUG_PRINT("Filling CudaFrame Memory With Frame Data...");
 
+        const cudaStream_t stream = cudaStreamPerThread;
+
         mnId = F.mnId;
         N = F.N;
         Nleft = F.Nleft;
@@ -95,11 +97,11 @@ namespace TRACKING_DATA_WRAPPER
         mDescriptor_rows = F.mDescriptors.rows;
         mvbOutlier_size = F.mvbOutlier.size();
 
-        checkCudaError(cudaMemcpy(mvuRight, F.mvuRight.data(), mvuRight_size * sizeof(float), cudaMemcpyHostToDevice), "CudaFrame:: Failed to copy mvuRight to gpu");
-        
+        checkCudaError(cudaMemcpyAsync(mvuRight, F.mvuRight.data(), mvuRight_size * sizeof(float), cudaMemcpyHostToDevice, stream), "CudaFrame:: Failed to copy mvuRight to gpu");
+
         if (!mDescriptorsIsOnGpu) {
-            checkCudaError(cudaMemcpy((void*) mDescriptors, F.mDescriptors.data,  F.mDescriptors.rows * DESCRIPTOR_SIZE * sizeof(uint8_t), cudaMemcpyHostToDevice), "CudaFrame:: Failed to copy mDescriptors to gpu"); 
-        } 
+            checkCudaError(cudaMemcpyAsync((void*) mDescriptors, F.mDescriptors.data,  F.mDescriptors.rows * DESCRIPTOR_SIZE * sizeof(uint8_t), cudaMemcpyHostToDevice, stream), "CudaFrame:: Failed to copy mDescriptors to gpu");
+        }
         
         if (!mvKeysIsOnGpu) {
             std::vector<CudaKeyPoint> tmp_mvKeys(mvKeys_size);
@@ -108,7 +110,7 @@ namespace TRACKING_DATA_WRAPPER
                 tmp_mvKeys[i].pty = F.mvKeys[i].pt.y;
                 tmp_mvKeys[i].octave = F.mvKeys[i].octave;
             }
-            checkCudaError(cudaMemcpy((void*) mvKeys, tmp_mvKeys.data(), mvKeys_size * sizeof(CudaKeyPoint), cudaMemcpyHostToDevice), "CudaFrame:: Failed to copy mvKeys to gpu");
+            checkCudaError(cudaMemcpyAsync((void*) mvKeys, tmp_mvKeys.data(), mvKeys_size * sizeof(CudaKeyPoint), cudaMemcpyHostToDevice, stream), "CudaFrame:: Failed to copy mvKeys to gpu");
         }
 
         if (!mvKeysRightIsOnGpu) {
@@ -118,7 +120,7 @@ namespace TRACKING_DATA_WRAPPER
                 tmp_mvKeysRight[i].pty = F.mvKeysRight[i].pt.y;
                 tmp_mvKeysRight[i].octave = F.mvKeysRight[i].octave;
             }
-            checkCudaError(cudaMemcpy((void*) mvKeysRight, tmp_mvKeysRight.data(), mvKeysRight_size * sizeof(CudaKeyPoint), cudaMemcpyHostToDevice), "CudaFrame:: Failed to copy mvKeysRight to gpu");
+            checkCudaError(cudaMemcpyAsync((void*) mvKeysRight, tmp_mvKeysRight.data(), mvKeysRight_size * sizeof(CudaKeyPoint), cudaMemcpyHostToDevice, stream), "CudaFrame:: Failed to copy mvKeysRight to gpu");
         }
 
         std::vector<CudaMapPoint> tmp_mvpMapPoints(mvpMapPoints_size);
@@ -131,7 +133,7 @@ namespace TRACKING_DATA_WRAPPER
                     tmp_mvpMapPoints[i] = cuda_mp;            
                 }
         }
-        checkCudaError(cudaMemcpy(mvpMapPoints, tmp_mvpMapPoints.data(), tmp_mvpMapPoints.size() * sizeof(CudaMapPoint), cudaMemcpyHostToDevice), "CudaFrame:: Failed to copy mvpMapPoints to gpu");
+        checkCudaError(cudaMemcpyAsync(mvpMapPoints, tmp_mvpMapPoints.data(), tmp_mvpMapPoints.size() * sizeof(CudaMapPoint), cudaMemcpyHostToDevice, stream), "CudaFrame:: Failed to copy mvpMapPoints to gpu");
         
 
         std::vector<CudaKeyPoint> tmp_mvKeysUn(mvKeysUn_size);   
@@ -140,7 +142,7 @@ namespace TRACKING_DATA_WRAPPER
             tmp_mvKeysUn[i].pty = F.mvKeysUn[i].pt.y;
             tmp_mvKeysUn[i].octave = F.mvKeysUn[i].octave;
         }
-        checkCudaError(cudaMemcpy(mvKeysUn, tmp_mvKeysUn.data(), mvKeysUn_size * sizeof(CudaKeyPoint), cudaMemcpyHostToDevice), "CudaFrame:: Failed to copy mvKeysUn to gpu");
+        checkCudaError(cudaMemcpyAsync(mvKeysUn, tmp_mvKeysUn.data(), mvKeysUn_size * sizeof(CudaKeyPoint), cudaMemcpyHostToDevice, stream), "CudaFrame:: Failed to copy mvKeysUn to gpu");
 
         int keypoints_per_cell = CudaUtils::keypointsPerCell;
         for (int i = 0; i < FRAME_GRID_COLS; ++i) {
@@ -170,13 +172,13 @@ namespace TRACKING_DATA_WRAPPER
         for (int i = 0; i < F.mvbOutlier.size(); ++i) {
             intVec[i] = F.mvbOutlier[i] ? 1 : 0;
         }
-        checkCudaError(cudaMemcpy(mvbOutlier, intVec.data(),  intVec.size() * sizeof(uint8_t), cudaMemcpyHostToDevice), "CudaFrame:: Failed to copy mvbOutlier to gpu");
+        checkCudaError(cudaMemcpyAsync(mvbOutlier, intVec.data(),  intVec.size() * sizeof(uint8_t), cudaMemcpyHostToDevice, stream), "CudaFrame:: Failed to copy mvbOutlier to gpu");
 
         std::memcpy(mpCamera_mvParameters, F.mpCamera->getParameters().data(), F.mpCamera->getParameters().size() * sizeof(float));
-        
+
         mTrl = F.GetRelativePoseTrl().matrix();
 
-        checkCudaError(cudaDeviceSynchronize(), "[cudaFrame:] failed to set memory");  
+        checkCudaError(cudaStreamSynchronize(stream), "[cudaFrame:] failed to set memory");
 
     }
 
