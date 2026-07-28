@@ -97,6 +97,7 @@ src/MapDrawer.cc
 src/Optimizer.cc
 src/Optimizer.cu
 src/LocalBA.cu
+src/FIBA.cu
 src/Frame.cc
 src/KeyFrameDatabase.cc
 src/Sim3Solver.cc
