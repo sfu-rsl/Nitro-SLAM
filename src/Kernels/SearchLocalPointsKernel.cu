@@ -394,19 +394,20 @@ void SearchLocalPointsKernel::launch(ORB_SLAM3::Frame &F, const vector<ORB_SLAM3
     std::chrono::steady_clock::time_point startMapPointsTransfer = std::chrono::steady_clock::now();
 #endif
 
-    cudaMemcpy(d_isEmpty, h_isEmpty, numPoints * sizeof(bool), cudaMemcpyHostToDevice); 
-    cudaMemcpy(d_mbTrackInView, h_mbTrackInView, numPoints * sizeof(bool), cudaMemcpyHostToDevice); 
-    cudaMemcpy(d_mbTrackInViewR, h_mbTrackInViewR, numPoints * sizeof(bool), cudaMemcpyHostToDevice); 
-    cudaMemcpy(d_mTrackDepth, h_mTrackDepth, numPoints * sizeof(float), cudaMemcpyHostToDevice); 
-    cudaMemcpy(d_mnTrackScaleLevel, h_mnTrackScaleLevel, numPoints * sizeof(int), cudaMemcpyHostToDevice); 
-    cudaMemcpy(d_mTrackViewCos, h_mTrackViewCos, numPoints * sizeof(float), cudaMemcpyHostToDevice); 
-    cudaMemcpy(d_mTrackProjX, h_mTrackProjX, numPoints * sizeof(float), cudaMemcpyHostToDevice); 
-    cudaMemcpy(d_mTrackProjY, h_mTrackProjY, numPoints * sizeof(float), cudaMemcpyHostToDevice); 
-    cudaMemcpy(d_mnTrackScaleLevelR, h_mnTrackScaleLevelR, numPoints * sizeof(int), cudaMemcpyHostToDevice); 
-    cudaMemcpy(d_mTrackViewCosR, h_mTrackViewCosR, numPoints * sizeof(float), cudaMemcpyHostToDevice); 
-    cudaMemcpy(d_mTrackProjXR, h_mTrackProjXR, numPoints * sizeof(float), cudaMemcpyHostToDevice); 
-    cudaMemcpy(d_mTrackProjYR, h_mTrackProjYR, numPoints * sizeof(float), cudaMemcpyHostToDevice); 
-    cudaMemcpy(d_mDescriptor, h_mDescriptor, numPoints * DESCRIPTOR_SIZE * sizeof(uint8_t), cudaMemcpyHostToDevice); 
+    const cudaStream_t stream = cudaStreamPerThread;
+    cudaMemcpyAsync(d_isEmpty, h_isEmpty, numPoints * sizeof(bool), cudaMemcpyHostToDevice, stream); 
+    cudaMemcpyAsync(d_mbTrackInView, h_mbTrackInView, numPoints * sizeof(bool), cudaMemcpyHostToDevice, stream); 
+    cudaMemcpyAsync(d_mbTrackInViewR, h_mbTrackInViewR, numPoints * sizeof(bool), cudaMemcpyHostToDevice, stream); 
+    cudaMemcpyAsync(d_mTrackDepth, h_mTrackDepth, numPoints * sizeof(float), cudaMemcpyHostToDevice, stream); 
+    cudaMemcpyAsync(d_mnTrackScaleLevel, h_mnTrackScaleLevel, numPoints * sizeof(int), cudaMemcpyHostToDevice, stream); 
+    cudaMemcpyAsync(d_mTrackViewCos, h_mTrackViewCos, numPoints * sizeof(float), cudaMemcpyHostToDevice, stream); 
+    cudaMemcpyAsync(d_mTrackProjX, h_mTrackProjX, numPoints * sizeof(float), cudaMemcpyHostToDevice, stream); 
+    cudaMemcpyAsync(d_mTrackProjY, h_mTrackProjY, numPoints * sizeof(float), cudaMemcpyHostToDevice, stream); 
+    cudaMemcpyAsync(d_mnTrackScaleLevelR, h_mnTrackScaleLevelR, numPoints * sizeof(int), cudaMemcpyHostToDevice, stream); 
+    cudaMemcpyAsync(d_mTrackViewCosR, h_mTrackViewCosR, numPoints * sizeof(float), cudaMemcpyHostToDevice, stream); 
+    cudaMemcpyAsync(d_mTrackProjXR, h_mTrackProjXR, numPoints * sizeof(float), cudaMemcpyHostToDevice, stream); 
+    cudaMemcpyAsync(d_mTrackProjYR, h_mTrackProjYR, numPoints * sizeof(float), cudaMemcpyHostToDevice, stream); 
+    cudaMemcpyAsync(d_mDescriptor, h_mDescriptor, numPoints * DESCRIPTOR_SIZE * sizeof(uint8_t), cudaMemcpyHostToDevice, stream); 
 
 #ifdef REGISTER_TRACKING_STATS
     std::chrono::steady_clock::time_point endMapPointsTransfer = std::chrono::steady_clock::now();
@@ -415,7 +416,7 @@ void SearchLocalPointsKernel::launch(ORB_SLAM3::Frame &F, const vector<ORB_SLAM3
 
     int blockSize = 256;
     int numBlocks = (numPoints + blockSize - 1) / blockSize;
-    searchByProjectionKernel<<<numBlocks, blockSize>>>(d_frame, 
+    searchByProjectionKernel<<<numBlocks, blockSize, 0, stream>>>(d_frame, 
                                                         d_isEmpty,
                                                         d_mbTrackInView,
                                                         d_mbTrackInViewR,
@@ -432,23 +433,25 @@ void SearchLocalPointsKernel::launch(ORB_SLAM3::Frame &F, const vector<ORB_SLAM3
                                                         CudaUtils::d_mvScaleFactors, numPoints, th, 
                                                         d_bestLevel, d_bestLevel2, d_bestDist, d_bestDist2, d_bestIdx,
                                                         d_bestLevelR, d_bestLevelR2, d_bestDistR, d_bestDistR2, d_bestIdxR);
-    checkCudaError(cudaDeviceSynchronize(), "[searchByProjectionKernel:] Kernel launch failed");  
 
 #ifdef REGISTER_TRACKING_STATS
     std::chrono::steady_clock::time_point endKernel = std::chrono::steady_clock::now();
     std::chrono::steady_clock::time_point startOutputTransfer = std::chrono::steady_clock::now();
 #endif
 
-    checkCudaError(cudaMemcpy(h_bestLevel, d_bestLevel, numPoints * sizeof(int), cudaMemcpyDeviceToHost), "Failed to copy d_bestLevel back to host");
-    checkCudaError(cudaMemcpy(h_bestLevel2, d_bestLevel2, numPoints * sizeof(int), cudaMemcpyDeviceToHost), "Failed to copy d_bestLevel2 back to host");
-    checkCudaError(cudaMemcpy(h_bestDist, d_bestDist, numPoints * sizeof(int), cudaMemcpyDeviceToHost), "Failed to copy d_bestDist back to host");
-    checkCudaError(cudaMemcpy(h_bestDist2, d_bestDist2, numPoints * sizeof(int), cudaMemcpyDeviceToHost), "Failed to copy d_bestDist2 back to host");
-    checkCudaError(cudaMemcpy(h_bestIdx, d_bestIdx, numPoints * sizeof(int), cudaMemcpyDeviceToHost), "Failed to copy d_bestIdx back to host");
-    checkCudaError(cudaMemcpy(h_bestLevelR, d_bestLevelR, numPoints * sizeof(int), cudaMemcpyDeviceToHost), "Failed to copy d_bestLevelR back to host");
-    checkCudaError(cudaMemcpy(h_bestLevelR2, d_bestLevelR2, numPoints * sizeof(int), cudaMemcpyDeviceToHost), "Failed to copy d_bestLevelR2 back to host");
-    checkCudaError(cudaMemcpy(h_bestDistR, d_bestDistR, numPoints * sizeof(int), cudaMemcpyDeviceToHost), "Failed to copy d_bestDistR back to host");
-    checkCudaError(cudaMemcpy(h_bestDistR2, d_bestDistR2, numPoints * sizeof(int), cudaMemcpyDeviceToHost), "Failed to copy d_bestDistR2 back to host");
-    checkCudaError(cudaMemcpy(h_bestIdxR, d_bestIdxR, numPoints * sizeof(int), cudaMemcpyDeviceToHost), "Failed to copy d_bestIdxR back to host");
+    checkCudaError(cudaMemcpyAsync(h_bestLevel, d_bestLevel, numPoints * sizeof(int), cudaMemcpyDeviceToHost, stream), "Failed to copy d_bestLevel back to host");
+    checkCudaError(cudaMemcpyAsync(h_bestLevel2, d_bestLevel2, numPoints * sizeof(int), cudaMemcpyDeviceToHost, stream), "Failed to copy d_bestLevel2 back to host");
+    checkCudaError(cudaMemcpyAsync(h_bestDist, d_bestDist, numPoints * sizeof(int), cudaMemcpyDeviceToHost, stream), "Failed to copy d_bestDist back to host");
+    checkCudaError(cudaMemcpyAsync(h_bestDist2, d_bestDist2, numPoints * sizeof(int), cudaMemcpyDeviceToHost, stream), "Failed to copy d_bestDist2 back to host");
+    checkCudaError(cudaMemcpyAsync(h_bestIdx, d_bestIdx, numPoints * sizeof(int), cudaMemcpyDeviceToHost, stream), "Failed to copy d_bestIdx back to host");
+    checkCudaError(cudaMemcpyAsync(h_bestLevelR, d_bestLevelR, numPoints * sizeof(int), cudaMemcpyDeviceToHost, stream), "Failed to copy d_bestLevelR back to host");
+    checkCudaError(cudaMemcpyAsync(h_bestLevelR2, d_bestLevelR2, numPoints * sizeof(int), cudaMemcpyDeviceToHost, stream), "Failed to copy d_bestLevelR2 back to host");
+    checkCudaError(cudaMemcpyAsync(h_bestDistR, d_bestDistR, numPoints * sizeof(int), cudaMemcpyDeviceToHost, stream), "Failed to copy d_bestDistR back to host");
+    checkCudaError(cudaMemcpyAsync(h_bestDistR2, d_bestDistR2, numPoints * sizeof(int), cudaMemcpyDeviceToHost, stream), "Failed to copy d_bestDistR2 back to host");
+    checkCudaError(cudaMemcpyAsync(h_bestIdxR, d_bestIdxR, numPoints * sizeof(int), cudaMemcpyDeviceToHost, stream), "Failed to copy d_bestIdxR back to host");
+
+    checkCudaError(cudaStreamSynchronize(stream), "[searchByProjectionKernel:] Kernel launch failed");  
+
 
 #ifdef REGISTER_TRACKING_STATS
     std::chrono::steady_clock::time_point endOutputTransfer = std::chrono::steady_clock::now();

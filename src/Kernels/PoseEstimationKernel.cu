@@ -364,20 +364,21 @@ void PoseEstimationKernel::launch(ORB_SLAM3::Frame &CurrentFrame, const ORB_SLAM
 #endif
     int blockSize = 256;
     int numBlocks = (LastFrame.N + blockSize - 1) / blockSize;
-    searchByProjectionKernel<<<numBlocks, blockSize>>>(d_currentFrame, d_lastFrame,
+    const cudaStream_t stream = cudaStreamPerThread;
+    searchByProjectionKernel<<<numBlocks, blockSize, 0, stream>>>(d_currentFrame, d_lastFrame,
                                                         CudaUtils::d_mvScaleFactors, CudaUtils::cameraIsFisheye,
                                                         th, bForward, bBackward, transform_matrix,
                                                         d_bestDist, d_bestIdx2, d_bestDistR, d_bestIdxR2);
-    checkCudaError(cudaDeviceSynchronize(), "[PoseEstimationKernel:] Kernel launch failed"); 
 #ifdef REGISTER_TRACKING_STATS
     std::chrono::steady_clock::time_point endKernel = std::chrono::steady_clock::now();
     std::chrono::steady_clock::time_point startOutputTransfer = std::chrono::steady_clock::now();
 #endif 
 
-    checkCudaError(cudaMemcpy(h_bestDist, d_bestDist, LastFrame.N  * sizeof(int), cudaMemcpyDeviceToHost), "Failed to copy d_bestDist back to host");
-    checkCudaError(cudaMemcpy(h_bestIdx2, d_bestIdx2, LastFrame.N  * sizeof(int), cudaMemcpyDeviceToHost), "Failed to copy d_bestIdx2 back to host");
-    checkCudaError(cudaMemcpy(h_bestDistR, d_bestDistR, LastFrame.N  * sizeof(int), cudaMemcpyDeviceToHost), "Failed to copy d_bestDistR back to host");
-    checkCudaError(cudaMemcpy(h_bestIdxR2, d_bestIdxR2, LastFrame.N  * sizeof(int), cudaMemcpyDeviceToHost), "Failed to copy d_bestIdxR2 back to host");
+    checkCudaError(cudaMemcpyAsync(h_bestDist, d_bestDist, LastFrame.N  * sizeof(int), cudaMemcpyDeviceToHost, stream), "Failed to copy d_bestDist back to host");
+    checkCudaError(cudaMemcpyAsync(h_bestIdx2, d_bestIdx2, LastFrame.N  * sizeof(int), cudaMemcpyDeviceToHost, stream), "Failed to copy d_bestIdx2 back to host");
+    checkCudaError(cudaMemcpyAsync(h_bestDistR, d_bestDistR, LastFrame.N  * sizeof(int), cudaMemcpyDeviceToHost, stream), "Failed to copy d_bestDistR back to host");
+    checkCudaError(cudaMemcpyAsync(h_bestIdxR2, d_bestIdxR2, LastFrame.N  * sizeof(int), cudaMemcpyDeviceToHost, stream), "Failed to copy d_bestIdxR2 back to host");
+    checkCudaError(cudaStreamSynchronize(stream), "[PoseEstimationKernel:] Kernel launch failed"); 
 
 #ifdef REGISTER_TRACKING_STATS
     std::chrono::steady_clock::time_point endOutputTransfer = std::chrono::steady_clock::now();

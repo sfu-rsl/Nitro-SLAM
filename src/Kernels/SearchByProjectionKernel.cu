@@ -660,21 +660,22 @@ int SearchByProjectionKernel::launch(ORB_SLAM3::KeyFrame* pKF, Sophus::Sim3<floa
     if (tempKF == nullptr){
         tempKF = CudaKeyFrameStorage::addCudaKeyFrame(pKF);
     }
-    cudaMemcpy(d_KeyFrame, tempKF, sizeof(MAPPING_DATA_WRAPPER::CudaKeyFrame), cudaMemcpyDeviceToDevice);
+
+    const cudaStream_t stream = cudaStreamPerThread;
+    cudaMemcpyAsync(d_KeyFrame, tempKF, sizeof(MAPPING_DATA_WRAPPER::CudaKeyFrame), cudaMemcpyDeviceToDevice, stream);
     
-    cudaMemcpy(d_MapPoints, h_MapPoints, mapPointVecSize * sizeof(MAPPING_DATA_WRAPPER::CudaMapPoint), cudaMemcpyHostToDevice);
+    cudaMemcpyAsync(d_MapPoints, h_MapPoints, mapPointVecSize * sizeof(MAPPING_DATA_WRAPPER::CudaMapPoint), cudaMemcpyHostToDevice, stream);
 
     int threads = 256;
     int blocks = (mapPointVecSize + threads - 1) / threads;
-    searchByProjectionKernel<<<blocks, threads>>>(Ow, Tcw,
+    searchByProjectionKernel<<<blocks, threads, 0, stream>>>(Ow, Tcw,
                                         d_KeyFrame, d_MapPoints, 
                                         mapPointVecSize, th, 
                                         d_bestDists, d_bestIdxs);
-    cudaDeviceSynchronize(); // ensure kernel errors propagate
 
-    checkCudaError(cudaMemcpy(bestDists, d_bestDists, mapPointVecSize * sizeof(int), cudaMemcpyDeviceToHost), "Failed to copy d_bestDists back to host2");
-    checkCudaError(cudaMemcpy(bestIdxs, d_bestIdxs, mapPointVecSize * sizeof(int), cudaMemcpyDeviceToHost), "Failed to copy d_bestIdxs back to host");
-
+    checkCudaError(cudaMemcpyAsync(bestDists, d_bestDists, mapPointVecSize * sizeof(int), cudaMemcpyDeviceToHost, stream), "Failed to copy d_bestDists back to host2");
+    checkCudaError(cudaMemcpyAsync(bestIdxs, d_bestIdxs, mapPointVecSize * sizeof(int), cudaMemcpyDeviceToHost, stream), "Failed to copy d_bestIdxs back to host");
+    cudaStreamSynchronize(stream); // ensure kernel errors propagate
     cudaError_t err = cudaGetLastError();
     if (err != cudaSuccess) {
         printf("CUDA error: %s\n", cudaGetErrorString(err));
@@ -775,20 +776,24 @@ int SearchByProjectionKernel::launch(ORB_SLAM3::KeyFrame* pKF, Sophus::Sim3<floa
         tempKF = CudaKeyFrameStorage::addCudaKeyFrame(pKF);
     }
 
-    cudaMemcpy(d_KeyFrame, tempKF, sizeof(MAPPING_DATA_WRAPPER::CudaKeyFrame), cudaMemcpyDeviceToDevice);
-    cudaMemcpy(d_MapPoints, h_MapPoints, mapPointVecSize * sizeof(MAPPING_DATA_WRAPPER::CudaMapPoint), cudaMemcpyHostToDevice);
+    const cudaStream_t stream = cudaStreamPerThread;
+
+    cudaMemcpyAsync(d_KeyFrame, tempKF, sizeof(MAPPING_DATA_WRAPPER::CudaKeyFrame), cudaMemcpyDeviceToDevice, stream);
+    cudaMemcpyAsync(d_MapPoints, h_MapPoints, mapPointVecSize * sizeof(MAPPING_DATA_WRAPPER::CudaMapPoint), cudaMemcpyHostToDevice, stream);
     
     int threads = 256;
     int blocks = (mapPointVecSize + threads - 1) / threads;
-    searchByProjectionKernel2<<<blocks, threads>>>(Ow, Tcw,
+    searchByProjectionKernel2<<<blocks, threads, 0, stream>>>(Ow, Tcw,
                                         d_KeyFrame, d_MapPoints, 
                                         mapPointVecSize, th, 
                                         d_bestDists, d_bestIdxs);
     
-    cudaDeviceSynchronize();
 
-    checkCudaError(cudaMemcpy(bestDists, d_bestDists, mapPointVecSize * sizeof(int), cudaMemcpyDeviceToHost), "Failed to copy d_bestDists back to host3");
-    checkCudaError(cudaMemcpy(bestIdxs, d_bestIdxs, mapPointVecSize * sizeof(int), cudaMemcpyDeviceToHost), "Failed to copy d_bestIdxs back to host");
+    checkCudaError(cudaMemcpyAsync(bestDists, d_bestDists, mapPointVecSize * sizeof(int), cudaMemcpyDeviceToHost, stream), "Failed to copy d_bestDists back to host3");
+    checkCudaError(cudaMemcpyAsync(bestIdxs, d_bestIdxs, mapPointVecSize * sizeof(int), cudaMemcpyDeviceToHost, stream), "Failed to copy d_bestIdxs back to host");
+
+    cudaStreamSynchronize(stream);
+
 
     cudaError_t err = cudaGetLastError();
     if (err != cudaSuccess) {
@@ -892,20 +897,20 @@ void SearchByProjectionKernel::mergedlaunch(ORB_SLAM3::KeyFrame* pKF, const std:
     }
     // cudaMemcpy(d_KeyFrame, tempKF, sizeof(MAPPING_DATA_WRAPPER::CudaKeyFrame), cudaMemcpyDeviceToDevice);
 
-    cudaMemcpy(d_MapPoints, h_MapPoints, numValidPoints * sizeof(MAPPING_DATA_WRAPPER::CudaMapPoint), cudaMemcpyHostToDevice); //todo2
+    const cudaStream_t stream = cudaStreamPerThread;
+    cudaMemcpyAsync(d_MapPoints, h_MapPoints, numValidPoints * sizeof(MAPPING_DATA_WRAPPER::CudaMapPoint), cudaMemcpyHostToDevice, stream); //todo2
 
     int threads = 256;
     int blocks = (2 * numValidPoints + threads - 1) / threads;
-    mergedSearchByProjectionKernel<<<blocks, threads>>>(Ow1, Tcw1,
+    mergedSearchByProjectionKernel<<<blocks, threads, 0, stream>>>(Ow1, Tcw1,
                                         d_KeyFrame, d_MapPoints, 
                                         numValidPoints, th1, th, 
                                         d_bestDists, d_bestIdxs);
     
-    cudaDeviceSynchronize();
 
-    checkCudaError(cudaMemcpy(bestDists, d_bestDists, 2 * numValidPoints * sizeof(int), cudaMemcpyDeviceToHost), "Failed to copy d_bestDists back to host4"); //todo3
-    checkCudaError(cudaMemcpy(bestIdxs, d_bestIdxs, 2 * numValidPoints * sizeof(int), cudaMemcpyDeviceToHost), "Failed to copy d_bestIdxs back to host"); //todo4
-
+    checkCudaError(cudaMemcpyAsync(bestDists, d_bestDists, 2 * numValidPoints * sizeof(int), cudaMemcpyDeviceToHost, stream), "Failed to copy d_bestDists back to host4"); //todo3
+    checkCudaError(cudaMemcpyAsync(bestIdxs, d_bestIdxs, 2 * numValidPoints * sizeof(int), cudaMemcpyDeviceToHost, stream), "Failed to copy d_bestIdxs back to host"); //todo4
+    cudaStreamSynchronize(stream);
     cudaError_t err = cudaGetLastError();
     if (err != cudaSuccess) {
         printf("CUDA error: %s\n", cudaGetErrorString(err));
@@ -1024,28 +1029,30 @@ void SearchByProjectionKernel::mergedlaunch(vector<ORB_SLAM3::KeyFrame*> current
         }
     }
     
-    cudaMemcpy(d_MapPoints, h_MapPoints, numValidPoints * sizeof(MAPPING_DATA_WRAPPER::CudaMapPoint), cudaMemcpyHostToDevice); //todo2
-    cudaMemcpy(d_KeyFrames, h_KeyFrames, covKFsSize * sizeof(MAPPING_DATA_WRAPPER::CudaKeyFrame), cudaMemcpyHostToDevice);
-    cudaMemcpy(d_Ow, h_Ow, covKFsSize * sizeof(Eigen::Vector3f), cudaMemcpyHostToDevice);
-    cudaMemcpy(d_Tcw, h_Tcw, covKFsSize * sizeof(Sophus::SE3f), cudaMemcpyHostToDevice);
+    const cudaStream_t stream = cudaStreamPerThread;
+    cudaMemcpyAsync(d_MapPoints, h_MapPoints, numValidPoints * sizeof(MAPPING_DATA_WRAPPER::CudaMapPoint), cudaMemcpyHostToDevice, stream); //todo2
+    cudaMemcpyAsync(d_KeyFrames, h_KeyFrames, covKFsSize * sizeof(MAPPING_DATA_WRAPPER::CudaKeyFrame), cudaMemcpyHostToDevice, stream);
+    cudaMemcpyAsync(d_Ow, h_Ow, covKFsSize * sizeof(Eigen::Vector3f), cudaMemcpyHostToDevice, stream);
+    cudaMemcpyAsync(d_Tcw, h_Tcw, covKFsSize * sizeof(Sophus::SE3f), cudaMemcpyHostToDevice, stream);
 
     int threads = 256;
     int blocks = (covKFsSize * numValidPoints + threads - 1) / threads;
 
-    searchByProjectionKernel3<<<blocks, threads>>>(d_Ow, d_Tcw,
+    searchByProjectionKernel3<<<blocks, threads, 0, stream>>>(d_Ow, d_Tcw,
                                         d_KeyFrames, d_MapPoints,
                                         numValidPoints, th, covKFsSize, 
                                         d_bestDists, d_bestIdxs);
     
-    cudaDeviceSynchronize();
+    checkCudaError(cudaMemcpyAsync(bestDists, d_bestDists, numValidPoints * covKFsSize * sizeof(int), cudaMemcpyDeviceToHost, stream), "Failed to copy d_bestDists back to host6");
+    checkCudaError(cudaMemcpyAsync(bestIdxs, d_bestIdxs, numValidPoints * covKFsSize * sizeof(int), cudaMemcpyDeviceToHost, stream), "Failed to copy d_bestIdxs back to host");
+
+    cudaStreamSynchronize(stream);
     
     cudaError_t err = cudaGetLastError();
     if (err != cudaSuccess) {
         printf("CUDA error: %s\n", cudaGetErrorString(err));
     }
 
-    checkCudaError(cudaMemcpy(bestDists, d_bestDists, numValidPoints * covKFsSize * sizeof(int), cudaMemcpyDeviceToHost), "Failed to copy d_bestDists back to host6");
-    checkCudaError(cudaMemcpy(bestIdxs, d_bestIdxs, numValidPoints * covKFsSize * sizeof(int), cudaMemcpyDeviceToHost), "Failed to copy d_bestIdxs back to host");
 
     
     // std::ofstream gpuOutFile("./test/GPU-Side.txt", std::ios::app);    
