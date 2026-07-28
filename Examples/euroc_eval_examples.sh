@@ -21,7 +21,7 @@ echo "Launching $dataset_name with Stereo-Inertial sensor"
 # gdb -ex "set print thread-events off" -ex "set args $ARGS" -ex "run" $EXECUTABLE
 
 #without gdb
-./Stereo-Inertial/stereo_inertial_euroc ../Vocabulary/ORBvoc.txt ./Stereo-Inertial/EuRoC.yaml "${pathDatasetEuroc}"/"${dataset_name}" ./Stereo-Inertial/EuRoC_TimeStamps/${dataset_name}.txt ${file_name} ${statsDir} ${FastTrack_on} ${TurboMap_on} ${FastLoop_on} ${kernel_status_FT} ${kernel_status_TM} ${kernel_status_FL}
+CUDA_MODULE_LOADING=EAGER ./Stereo-Inertial/stereo_inertial_euroc ../Vocabulary/ORBvoc.txt ./Stereo-Inertial/EuRoC.yaml "${pathDatasetEuroc}"/"${dataset_name}" ./Stereo-Inertial/EuRoC_TimeStamps/${dataset_name}.txt ${file_name} ${statsDir} ${FastTrack_on} ${TurboMap_on} ${FastLoop_on} ${kernel_status_FT} ${kernel_status_TM} ${kernel_status_FL}
 # compute-sanitizer --tool memcheck --report-api-errors all --show-backtrace no ./Stereo-Inertial/stereo_inertial_euroc ../Vocabulary/ORBvoc.txt ./Stereo-Inertial/EuRoC.yaml "${pathDatasetEuroc}"/"${dataset_name}" ./Stereo-Inertial/EuRoC_TimeStamps/${dataset_name}.txt "${file_name}" "${statsDir}" ${FastTrack_on} ${TurboMap_on} ${FastLoop_on} ${kernel_status_FT} ${kernel_status_TM} ${kernel_status_FL}
 
 echo "------------------------------------"
