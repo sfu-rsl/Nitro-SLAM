@@ -640,27 +640,28 @@ void SearchForTriangulationKernel::launch(ORB_SLAM3::KeyFrame* mpCurrentKeyFrame
     std::chrono::steady_clock::time_point startMemcpy = std::chrono::steady_clock::now();
 #endif
 
-    checkCudaError(cudaMemcpy(d_neighKeyframes, neighKeyframesOnGPU, sizeof(MAPPING_DATA_WRAPPER::CudaKeyFrame*)*nn, cudaMemcpyHostToDevice), "Failed to copy vector neighKeyframesOnGPU from host to device");
+    const cudaStream_t stream = cudaStreamPerThread;
+    checkCudaError(cudaMemcpyAsync(d_neighKeyframes, neighKeyframesOnGPU, sizeof(MAPPING_DATA_WRAPPER::CudaKeyFrame*)*nn, cudaMemcpyHostToDevice, stream), "Failed to copy vector neighKeyframesOnGPU from host to device");
 
-    checkCudaError(cudaMemcpy(d_currFrameFeatVecIdxCorrespondences, currFrameFeatVecIdxCorrespondences, sizeof(size_t)*nn*featVecSize, cudaMemcpyHostToDevice), "Failed to copy vector currFrameFeatVecIdxCorrespondences from host to device");
-    checkCudaError(cudaMemcpy(d_neighFramesFeatVecIdxCorrespondences, neighFramesFeatVecIdxCorrespondences, sizeof(size_t)*nn*featVecSize, cudaMemcpyHostToDevice), "Failed to copy vector neighFramesFeatVecIdxCorrespondences from host to device");
+    checkCudaError(cudaMemcpyAsync(d_currFrameFeatVecIdxCorrespondences, currFrameFeatVecIdxCorrespondences, sizeof(size_t)*nn*featVecSize, cudaMemcpyHostToDevice, stream), "Failed to copy vector currFrameFeatVecIdxCorrespondences from host to device");
+    checkCudaError(cudaMemcpyAsync(d_neighFramesFeatVecIdxCorrespondences, neighFramesFeatVecIdxCorrespondences, sizeof(size_t)*nn*featVecSize, cudaMemcpyHostToDevice, stream), "Failed to copy vector neighFramesFeatVecIdxCorrespondences from host to device");
 
-    checkCudaError(cudaMemcpy(d_Rll, Rll, sizeof(Eigen::Matrix3f)*nn, cudaMemcpyHostToDevice), "Failed to copy vector Rll from host to device");
-    checkCudaError(cudaMemcpy(d_Rlr, Rlr, sizeof(Eigen::Matrix3f)*nn, cudaMemcpyHostToDevice), "Failed to copy vector Rlr from host to device");
-    checkCudaError(cudaMemcpy(d_Rrl, Rrl, sizeof(Eigen::Matrix3f)*nn, cudaMemcpyHostToDevice), "Failed to copy vector Rrl from host to device");
-    checkCudaError(cudaMemcpy(d_Rrr, Rrr, sizeof(Eigen::Matrix3f)*nn, cudaMemcpyHostToDevice), "Failed to copy vector Rrr from host to device");
-    checkCudaError(cudaMemcpy(d_tll, tll, sizeof(Eigen::Vector3f)*nn, cudaMemcpyHostToDevice), "Failed to copy vector tll from host to device");
-    checkCudaError(cudaMemcpy(d_tlr, tlr, sizeof(Eigen::Vector3f)*nn, cudaMemcpyHostToDevice), "Failed to copy vector tlr from host to device");
-    checkCudaError(cudaMemcpy(d_trl, trl, sizeof(Eigen::Vector3f)*nn, cudaMemcpyHostToDevice), "Failed to copy vector trl from host to device");
-    checkCudaError(cudaMemcpy(d_trr, trr, sizeof(Eigen::Vector3f)*nn, cudaMemcpyHostToDevice), "Failed to copy vector trr from host to device");
-    checkCudaError(cudaMemcpy(d_R12, R12s, sizeof(Eigen::Matrix3f)*nn, cudaMemcpyHostToDevice), "Failed to copy vector R12s from host to device");
-    checkCudaError(cudaMemcpy(d_t12, t12s, sizeof(Eigen::Vector3f)*nn, cudaMemcpyHostToDevice), "Failed to copy vector t12s from host to device");
-    checkCudaError(cudaMemcpy(d_ep, eps, sizeof(Eigen::Vector2f)*nn, cudaMemcpyHostToDevice), "Failed to copy vector eps from host to device");
+    checkCudaError(cudaMemcpyAsync(d_Rll, Rll, sizeof(Eigen::Matrix3f)*nn, cudaMemcpyHostToDevice, stream), "Failed to copy vector Rll from host to device");
+    checkCudaError(cudaMemcpyAsync(d_Rlr, Rlr, sizeof(Eigen::Matrix3f)*nn, cudaMemcpyHostToDevice, stream), "Failed to copy vector Rlr from host to device");
+    checkCudaError(cudaMemcpyAsync(d_Rrl, Rrl, sizeof(Eigen::Matrix3f)*nn, cudaMemcpyHostToDevice, stream), "Failed to copy vector Rrl from host to device");
+    checkCudaError(cudaMemcpyAsync(d_Rrr, Rrr, sizeof(Eigen::Matrix3f)*nn, cudaMemcpyHostToDevice, stream), "Failed to copy vector Rrr from host to device");
+    checkCudaError(cudaMemcpyAsync(d_tll, tll, sizeof(Eigen::Vector3f)*nn, cudaMemcpyHostToDevice, stream), "Failed to copy vector tll from host to device");
+    checkCudaError(cudaMemcpyAsync(d_tlr, tlr, sizeof(Eigen::Vector3f)*nn, cudaMemcpyHostToDevice, stream), "Failed to copy vector tlr from host to device");
+    checkCudaError(cudaMemcpyAsync(d_trl, trl, sizeof(Eigen::Vector3f)*nn, cudaMemcpyHostToDevice, stream), "Failed to copy vector trl from host to device");
+    checkCudaError(cudaMemcpyAsync(d_trr, trr, sizeof(Eigen::Vector3f)*nn, cudaMemcpyHostToDevice, stream), "Failed to copy vector trr from host to device");
+    checkCudaError(cudaMemcpyAsync(d_R12, R12s, sizeof(Eigen::Matrix3f)*nn, cudaMemcpyHostToDevice, stream), "Failed to copy vector R12s from host to device");
+    checkCudaError(cudaMemcpyAsync(d_t12, t12s, sizeof(Eigen::Vector3f)*nn, cudaMemcpyHostToDevice, stream), "Failed to copy vector t12s from host to device");
+    checkCudaError(cudaMemcpyAsync(d_ep, eps, sizeof(Eigen::Vector2f)*nn, cudaMemcpyHostToDevice, stream), "Failed to copy vector eps from host to device");
 
-    checkCudaError(cudaMemcpy(d_currFrameMapPointExists, currFrameMapPointExists, sizeof(currFrameMapPointExists), cudaMemcpyHostToDevice), "Failed to copy vector currFrameMapPointExists from host to device");
-    checkCudaError(cudaMemcpy(d_neighFramesMapPointExists, neighFramesMapPointExists, sizeof(neighFramesMapPointExists), cudaMemcpyHostToDevice), "Failed to copy vector neighFramesMapPointExists from host to device");
+    checkCudaError(cudaMemcpyAsync(d_currFrameMapPointExists, currFrameMapPointExists, sizeof(currFrameMapPointExists), cudaMemcpyHostToDevice, stream), "Failed to copy vector currFrameMapPointExists from host to device");
+    checkCudaError(cudaMemcpyAsync(d_neighFramesMapPointExists, neighFramesMapPointExists, sizeof(neighFramesMapPointExists), cudaMemcpyHostToDevice, stream), "Failed to copy vector neighFramesMapPointExists from host to device");
 
-    checkCudaError(cudaMemset(d_matchedPairIndexes, 0xFF, nn*outVecSize*sizeof(int)), "Failed to set the memory of d_matchedPairIndexes to -1");
+    checkCudaError(cudaMemsetAsync(d_matchedPairIndexes, 0xFF, nn*outVecSize*sizeof(int), stream), "Failed to set the memory of d_matchedPairIndexes to -1");
 
 #ifdef REGISTER_LOCAL_MAPPING_STATS
     std::chrono::steady_clock::time_point endMemcpy = std::chrono::steady_clock::now();
@@ -669,7 +670,7 @@ void SearchForTriangulationKernel::launch(ORB_SLAM3::KeyFrame* mpCurrentKeyFrame
 
     dim3 gridDim(nn);
     dim3 blockDim(featVecSize);
-    searchForTriangulationKernel<<<gridDim, blockDim>>>(
+    searchForTriangulationKernel<<<gridDim, blockDim, 0, stream>>>(
         currKeyframeOnGPU, d_neighKeyframes, featVecSize, mapPointVecSize, outVecSize, camPrecision, bCoarse,
         d_currFrameFeatVecIdxCorrespondences, d_neighFramesFeatVecIdxCorrespondences,
         d_Rll, d_Rlr, d_Rrl, d_Rrr, d_R12, d_tll, d_tlr, d_trl, d_trr, d_t12, d_ep,
@@ -678,15 +679,18 @@ void SearchForTriangulationKernel::launch(ORB_SLAM3::KeyFrame* mpCurrentKeyFrame
     );
     
     checkCudaError(cudaGetLastError(), "Failed to launch searchForTriangulationKernel kernel");
-    checkCudaError(cudaDeviceSynchronize(), "cudaDeviceSynchronize returned error code after launching the kernel");
+
+    int h_matchedPairIndexes[outVecSize*nn];
+    checkCudaError(cudaMemcpyAsync(h_matchedPairIndexes, d_matchedPairIndexes, sizeof(int)*outVecSize*nn, cudaMemcpyDeviceToHost, stream), "Failed to copy vector d_matchedPairIndexes from device to host");
+
+
+    checkCudaError(cudaStreamSynchronize(stream), "cudaStreamSynchronize returned error code after launching the searchForTriangulation kernel");
 
 #ifdef REGISTER_LOCAL_MAPPING_STATS
     std::chrono::steady_clock::time_point endsearchForTriangulationKernel = std::chrono::steady_clock::now();
     std::chrono::steady_clock::time_point startMemcpyToCPU = std::chrono::steady_clock::now();
 #endif
     
-    int h_matchedPairIndexes[outVecSize*nn];
-    checkCudaError(cudaMemcpy(h_matchedPairIndexes, d_matchedPairIndexes, sizeof(int)*outVecSize*nn, cudaMemcpyDeviceToHost), "Failed to copy vector d_matchedPairIndexes from device to host");
 
 #ifdef REGISTER_LOCAL_MAPPING_STATS
     std::chrono::steady_clock::time_point endMemcpyToCPU = std::chrono::steady_clock::now();

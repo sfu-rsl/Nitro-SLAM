@@ -393,15 +393,16 @@ void StereoMatchKernel::launch(std::vector<std::vector<int>> &vRowIndices, uchar
     std::chrono::steady_clock::time_point startMemcpy = std::chrono::steady_clock::now();
 #endif
 
-    checkCudaError(cudaMemcpy(d_rowIndices, vRowIndicesFlat, sizeof(int)*nRows*MAX_FEATURES_IN_ROW_SLIDING_WINDOW, cudaMemcpyHostToDevice), "Failed to copy vector vRowIndicesFlat from host to device");
-    checkCudaError(cudaMemcpy(d_gpuKeypointsL, gpuKeypointsL, sizeof(TRACKING_DATA_WRAPPER::CudaKeyPoint)*N, cudaMemcpyHostToDevice), "Failed to copy vector gpuKeypointsL from host to device");
-    checkCudaError(cudaMemcpy(d_gpuKeypointsR, gpuKeypointsR, sizeof(TRACKING_DATA_WRAPPER::CudaKeyPoint)*Nr, cudaMemcpyHostToDevice), "Failed to copy vector d_gpuKeypointsR from host to device");
-    checkCudaError(cudaMemcpy(d_descriptorsL, mDescriptors.data, sizeof(uchar)*N*DESCRIPTOR_SIZE, cudaMemcpyHostToDevice), "Failed to copy vector mDescriptors from host to device");
-    checkCudaError(cudaMemcpy(d_descriptorsR, mDescriptorsRight.data, sizeof(uchar)*Nr*DESCRIPTOR_SIZE, cudaMemcpyHostToDevice), "Failed to copy vector mDescriptorsRight from host to device");
+    const cudaStream_t stream = cudaStreamPerThread;
+    checkCudaError(cudaMemcpyAsync(d_rowIndices, vRowIndicesFlat, sizeof(int)*nRows*MAX_FEATURES_IN_ROW_SLIDING_WINDOW, cudaMemcpyHostToDevice, stream), "Failed to copy vector vRowIndicesFlat from host to device");
+    checkCudaError(cudaMemcpyAsync(d_gpuKeypointsL, gpuKeypointsL, sizeof(TRACKING_DATA_WRAPPER::CudaKeyPoint)*N, cudaMemcpyHostToDevice, stream), "Failed to copy vector gpuKeypointsL from host to device");
+    checkCudaError(cudaMemcpyAsync(d_gpuKeypointsR, gpuKeypointsR, sizeof(TRACKING_DATA_WRAPPER::CudaKeyPoint)*Nr, cudaMemcpyHostToDevice, stream), "Failed to copy vector d_gpuKeypointsR from host to device");
+    checkCudaError(cudaMemcpyAsync(d_descriptorsL, mDescriptors.data, sizeof(uchar)*N*DESCRIPTOR_SIZE, cudaMemcpyHostToDevice, stream), "Failed to copy vector mDescriptors from host to device");
+    checkCudaError(cudaMemcpyAsync(d_descriptorsR, mDescriptorsRight.data, sizeof(uchar)*Nr*DESCRIPTOR_SIZE, cudaMemcpyHostToDevice, stream), "Failed to copy vector mDescriptorsRight from host to device");
 
     if (!mvImagePyramidOnGpu) {
-        checkCudaError(cudaMemcpy(d_imagePyramidLCopied, imagePyramidLFlat, sizeof(uchar)*nLevels*origImageSize, cudaMemcpyHostToDevice), "Failed to copy vector d_imagePyramidLCopied from host to device");
-        checkCudaError(cudaMemcpy(d_imagePyramidRCopied, imagePyramidRFlat, sizeof(uchar)*nLevels*origImageSize, cudaMemcpyHostToDevice), "Failed to copy vector d_imagePyramidRCopied from host to device");
+        checkCudaError(cudaMemcpyAsync(d_imagePyramidLCopied, imagePyramidLFlat, sizeof(uchar)*nLevels*origImageSize, cudaMemcpyHostToDevice, stream), "Failed to copy vector d_imagePyramidLCopied from host to device");
+        checkCudaError(cudaMemcpyAsync(d_imagePyramidRCopied, imagePyramidRFlat, sizeof(uchar)*nLevels*origImageSize, cudaMemcpyHostToDevice, stream), "Failed to copy vector d_imagePyramidRCopied from host to device");
     }
 
 #ifdef REGISTER_TRACKING_STATS
@@ -411,13 +412,13 @@ void StereoMatchKernel::launch(std::vector<std::vector<int>> &vRowIndices, uchar
     int stereoMatchKernelBlockSize = 128;
     int stereoMatchKernelGridSize = (N + stereoMatchKernelBlockSize - 1) / stereoMatchKernelBlockSize;         
 
-    findBestStereoMatchKernel<<<stereoMatchKernelGridSize, stereoMatchKernelBlockSize>>>(
+    findBestStereoMatchKernel<<<stereoMatchKernelGridSize, stereoMatchKernelBlockSize, 0, stream>>>(
         N, d_rowIndices, d_gpuKeypointsL, d_gpuKeypointsR, d_descriptorsL, d_descriptorsR, MAX_FEATURES_IN_ROW_SLIDING_WINDOW, 
         minD, maxD, thOrbDist, minGlobalDist, d_bestIdxR
     );
 
     checkCudaError(cudaGetLastError(), "Failed to launch findBestStereoMatchKernel kernel");
-    checkCudaError(cudaDeviceSynchronize(), "cudaDeviceSynchronize returned error code after launching the kernel");
+    // checkCudaError(cudaStreamSynchronize(stream), "cudaStreamSynchronize returned error code after launching findBestStereoMatchKernel");
 
 #ifdef REGISTER_TRACKING_STATS
     std::chrono::steady_clock::time_point endStereoMatchKernel = std::chrono::steady_clock::now();
@@ -428,31 +429,33 @@ void StereoMatchKernel::launch(std::vector<std::vector<int>> &vRowIndices, uchar
     int refineMatchKernelGridSize = N;
 
     if (mvImagePyramidOnGpu) {
-        refineStereoMatchKernel<<<refineMatchKernelGridSize, refineMatchKernelBlockSize>>>(
+        refineStereoMatchKernel<<<refineMatchKernelGridSize, refineMatchKernelBlockSize, 0, stream>>>(
             d_bestIdxR, d_imagePyramidL, d_imagePyramidR, d_gpuKeypointsL, d_gpuKeypointsR, 0, nRows, nCols, scaleFactor, minD, maxD, mbf,
             d_vDistIdx, d_mvuRight, d_mvDepth
         );
     }
     else {
-        refineStereoMatchKernel<<<refineMatchKernelGridSize, refineMatchKernelBlockSize>>>(
+        refineStereoMatchKernel<<<refineMatchKernelGridSize, refineMatchKernelBlockSize, 0, stream>>>(
             d_bestIdxR, d_imagePyramidLCopied, d_imagePyramidRCopied, d_gpuKeypointsL, d_gpuKeypointsR, EDGE_THRESHOLD*2, nRows, nCols, scaleFactor, minD, maxD, mbf,
             d_vDistIdx, d_mvuRight, d_mvDepth
         );
     }
 
-    checkCudaError(cudaGetLastError(), "Failed to launch findBestStereoMatchKernel kernel");
-    checkCudaError(cudaDeviceSynchronize(), "cudaDeviceSynchronize returned error code after launching the kernel");
+    checkCudaError(cudaGetLastError(), "Failed to launch refineStereoMatchKernel kernel");
+
+    int h_vDistIdx[2*N];
+    float h_mvuRight[N], h_mvDepth[N];
+    checkCudaError(cudaMemcpyAsync(h_vDistIdx, d_vDistIdx, sizeof(int)*2*N, cudaMemcpyDeviceToHost, stream), "Failed to copy vector d_vDistIdx from device to host");
+    checkCudaError(cudaMemcpyAsync(h_mvuRight, d_mvuRight, sizeof(float)*N, cudaMemcpyDeviceToHost, stream), "Failed to copy vector d_mvuRight from device to host");
+    checkCudaError(cudaMemcpyAsync(h_mvDepth, d_mvDepth, sizeof(float)*N, cudaMemcpyDeviceToHost, stream), "Failed to copy vector d_mvDepth from device to host");
+
+    checkCudaError(cudaStreamSynchronize(stream), "cudaStreamSynchronize returned error code after launching refineStereoMatchKernel");
 
 #ifdef REGISTER_TRACKING_STATS
     std::chrono::steady_clock::time_point endRefineKernel = std::chrono::steady_clock::now();
     std::chrono::steady_clock::time_point startMemcpyToCPU = std::chrono::steady_clock::now();
 #endif
 
-    int h_vDistIdx[2*N];
-    float h_mvuRight[N], h_mvDepth[N];
-    checkCudaError(cudaMemcpy(h_vDistIdx, d_vDistIdx, sizeof(int)*2*N, cudaMemcpyDeviceToHost), "Failed to copy vector d_vDistIdx from device to host");
-    checkCudaError(cudaMemcpy(h_mvuRight, d_mvuRight, sizeof(float)*N, cudaMemcpyDeviceToHost), "Failed to copy vector d_mvuRight from device to host");
-    checkCudaError(cudaMemcpy(h_mvDepth, d_mvDepth, sizeof(float)*N, cudaMemcpyDeviceToHost), "Failed to copy vector d_mvDepth from device to host");
 
 #ifdef REGISTER_TRACKING_STATS
     std::chrono::steady_clock::time_point endMemcpyToCPU = std::chrono::steady_clock::now();
@@ -504,8 +507,9 @@ void StereoMatchKernel::launch(const int N, const int Nr, cv::Mat mDescriptors, 
     std::chrono::steady_clock::time_point startMemcpy = std::chrono::steady_clock::now();
 #endif
 
-    checkCudaError(cudaMemcpy(d_descriptorsAll, mDescriptors.data, sizeof(uchar)*N*DESCRIPTOR_SIZE, cudaMemcpyHostToDevice), "Failed to copy vector mDescriptors from host to device");
-    checkCudaError(cudaMemcpy(d_descriptorsAll + N*DESCRIPTOR_SIZE, mDescriptorsRight.data, sizeof(uchar)*Nr*DESCRIPTOR_SIZE, cudaMemcpyHostToDevice), "Failed to copy vector mDescriptorsRight from host to device");
+    const cudaStream_t stream = cudaStreamPerThread;
+    checkCudaError(cudaMemcpyAsync(d_descriptorsAll, mDescriptors.data, sizeof(uchar)*N*DESCRIPTOR_SIZE, cudaMemcpyHostToDevice, stream), "Failed to copy vector mDescriptors from host to device");
+    checkCudaError(cudaMemcpyAsync(d_descriptorsAll + N*DESCRIPTOR_SIZE, mDescriptorsRight.data, sizeof(uchar)*Nr*DESCRIPTOR_SIZE, cudaMemcpyHostToDevice, stream), "Failed to copy vector mDescriptorsRight from host to device");
 
 #ifdef REGISTER_TRACKING_STATS
     std::chrono::steady_clock::time_point endMemcpy = std::chrono::steady_clock::now();
@@ -515,17 +519,17 @@ void StereoMatchKernel::launch(const int N, const int Nr, cv::Mat mDescriptors, 
     int blockSize = 128;
     int gridSize = (N + blockSize - 1) / blockSize;
 
-    fisheyeStereoMatchKernel<<<gridSize, blockSize>>>(N, Nr, d_descriptorsAll, d_matches); 
+    fisheyeStereoMatchKernel<<<gridSize, blockSize, 0, stream>>>(N, Nr, d_descriptorsAll, d_matches); 
 
     checkCudaError(cudaGetLastError(), "Failed to launch fisheye stereo match kernel");
-    checkCudaError(cudaDeviceSynchronize(), "cudaDeviceSynchronize returned error code after launching the kernel");
+    checkCudaError(cudaMemcpyAsync(matches, d_matches, sizeof(int)*N, cudaMemcpyDeviceToHost, stream), "Failed to copy vector d_matches from device to host");
+    checkCudaError(cudaStreamSynchronize(stream), "cudaStreamSynchronize returned error code after launching fisheyeStereoMatchKernel");
 
 #ifdef REGISTER_TRACKING_STATS
     std::chrono::steady_clock::time_point endKernel = std::chrono::steady_clock::now();
     std::chrono::steady_clock::time_point startMemcpyToCPU = std::chrono::steady_clock::now();
 #endif
 
-    checkCudaError(cudaMemcpy(matches, d_matches, sizeof(int)*N, cudaMemcpyDeviceToHost), "Failed to copy vector d_matches from device to host");
 
 #ifdef REGISTER_TRACKING_STATS
     std::chrono::steady_clock::time_point endMemcpyToCPU = std::chrono::steady_clock::now();
