@@ -12,6 +12,7 @@ bool LoopClosingKernelController::merged3SearchByProjectionOnGPU = false;
 bool LoopClosingKernelController::searchAndFuseOnGPU = false;
 bool LoopClosingKernelController::singleSearchByProjectionOnGPU = false;
 bool LoopClosingKernelController::graphOptimizationOnGPU = false;
+bool LoopClosingKernelController::globalBAOnGPU = false;
 bool LoopClosingKernelController::memory_is_initialized = false;
 MAPPING_DATA_WRAPPER::CudaKeyFrame* LoopClosingKernelController::cudaKeyFramePtr;
 std::mutex LoopClosingKernelController::shutDownMutex;
@@ -28,13 +29,14 @@ void LoopClosingKernelController::activate()
 }
 
 
-void LoopClosingKernelController::setGPURunMode(bool _mergedSearchByProjectionEnabled, bool _merged3SearchByProjectionEnabled, bool _searchAndFuseEnabled, bool _singleSearchByProjectionEnabled, bool _graphOptimizationEnabled)
+void LoopClosingKernelController::setGPURunMode(bool _mergedSearchByProjectionEnabled, bool _merged3SearchByProjectionEnabled, bool _searchAndFuseEnabled, bool _singleSearchByProjectionEnabled, bool _graphOptimizationEnabled, bool _globalBAEnabled)
 {
     mergedSearchByProjectionOnGPU = _mergedSearchByProjectionEnabled;
     merged3SearchByProjectionOnGPU = _merged3SearchByProjectionEnabled;
     searchAndFuseOnGPU = _searchAndFuseEnabled;
     singleSearchByProjectionOnGPU = _singleSearchByProjectionEnabled;
     graphOptimizationOnGPU = _graphOptimizationEnabled;
+    globalBAOnGPU = _globalBAEnabled;
 }
 
 

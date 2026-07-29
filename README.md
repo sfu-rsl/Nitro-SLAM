@@ -57,7 +57,7 @@ Use this script to run an isolated experiment on a specific dataset sequence wit
 If not explicitly passed, the framework defaults to fully operational bitmasks for activated components:
 * **FastTrack:** `11110`
 * **TurboMap:** `1111`
-* **FastLoop:** `11111`
+* **FastLoop:** `111111`
 
 Each digit position within a passed bitmask acts as a binary switch (`1` to enable, `0` to disable) for a specific algorithmic sub-kernel or routine:
 
@@ -74,12 +74,13 @@ Each digit position within a passed bitmask acts as a binary switch (`1` to enab
 3. xx**1**x : Redundant keyframe culling optimization on CPU.
 4. xxx**1** : Local Bundle Adjustment (LBA) solver execution on GPU.
 
-##### FastLoop (5-Digit Configuration)
-1. **1**xxxx : Sim3 projection search/validation acceleration on GPU.
-2. x**1**xxx : Relative pose and loop transformation correction on GPU.
-3. xx**1**xx : Loop fusion window and duplicate map-point merging on GPU.
-4. xxx**1**x : Pose Graph Optimization (PGO) backend engine on GPU.
-5. xxxx**1** : Global Full Bundle Adjustment (BA) optimization layer execution.
+##### FastLoop (6-Digit Configuration)
+1. **1**xxxxx : Merged Sim3 projection search across covisible keyframes for loop-candidate verification on GPU.
+2. x**1**xxxx : Multi-keyframe (up to 3) common-region consistency check across the candidate's covisible keyframes on GPU.
+3. xx**1**xxx : Loop fusion window and duplicate map-point merging on GPU.
+4. xxx**1**xx : Low-level Sim3 projection-search kernel acceleration on GPU (used by the merged search routines above).
+5. xxxx**1**x : Pose Graph Optimization (PGO) / Essential Graph backend engine on GPU.
+6. xxxxx**1** : Global Full Inertial Bundle Adjustment (GBA) solver execution on GPU (falls back to a PCG iterative solver instead of the direct cuDSS solver once the map exceeds 200 keyframes).
 
 ---
 ---

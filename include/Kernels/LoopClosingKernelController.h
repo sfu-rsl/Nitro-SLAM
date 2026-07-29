@@ -21,8 +21,9 @@ public:
     static bool searchAndFuseOnGPU;
     static bool singleSearchByProjectionOnGPU;
     static bool graphOptimizationOnGPU;
+    static bool globalBAOnGPU;
 
-    static void setGPURunMode(bool mergedSearchByProjectionEnabled, bool merged3SearchByProjectionEnabled, bool searchAndFuseEnabled, bool singleSearchByProjectionEnabled, bool graphOptimizationEnabled);
+    static void setGPURunMode(bool mergedSearchByProjectionEnabled, bool merged3SearchByProjectionEnabled, bool searchAndFuseEnabled, bool singleSearchByProjectionEnabled, bool graphOptimizationEnabled, bool globalBAEnabled);
 
     static void initializeKernels();
 

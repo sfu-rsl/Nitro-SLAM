@@ -78,7 +78,8 @@ int main(int argc, char **argv)
     bool FL_searchAndFuseEnabled = (argv[argc-1][2] == '1');
     bool FL_singleSearchByProjectionEnabled = (argv[argc-1][3] == '1');
     bool FL_graphOptimizationEnabled = (argv[argc-1][4] == '1');
-    
+    bool FL_globalBAEnabled = (argv[argc-1][5] == '1');
+
     if (run_FastTrack) {
         TrackingKernelController::activate();
         TrackingKernelController::setGPURunMode(
@@ -117,7 +118,7 @@ int main(int argc, char **argv)
 
     if (run_FastLoop) {
         LoopClosingKernelController::activate();
-        LoopClosingKernelController::setGPURunMode(FL_mergedSearchByProjectionEnabled, FL_merged3SearchByProjectionEnabled, FL_searchAndFuseEnabled, FL_singleSearchByProjectionEnabled, FL_graphOptimizationEnabled);
+        LoopClosingKernelController::setGPURunMode(FL_mergedSearchByProjectionEnabled, FL_merged3SearchByProjectionEnabled, FL_searchAndFuseEnabled, FL_singleSearchByProjectionEnabled, FL_graphOptimizationEnabled, FL_globalBAEnabled);
 
         cout << "Activated FastLoop Kernels are: (";
         if (FL_mergedSearchByProjectionEnabled)
@@ -130,6 +131,8 @@ int main(int argc, char **argv)
             cout << "SingleSearchByProjection ";
         if (FL_graphOptimizationEnabled)
             cout << "GraphOptimization ";
+        if (FL_globalBAEnabled)
+            cout << "GlobalBA ";
         cout << ")\n";
     }
     

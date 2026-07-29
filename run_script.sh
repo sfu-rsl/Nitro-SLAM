@@ -32,7 +32,7 @@ fi
 # Defaults
 kernel_status_FT='11110'
 kernel_status_TM='1111'
-kernel_status_FL='11111'
+kernel_status_FL='111111'
 
 # Optional arguments
 kernel_status1=${7:-}
