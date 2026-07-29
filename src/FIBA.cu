@@ -8,8 +8,11 @@
 // #include "PGOTypes.h"
 #include <graphite/solver/eigen_schur.hpp>
 #include <graphite/solver/cudss_schur.hpp>
+#include <graphite/solver/pcg.hpp>
 #include <graphite/preconditioner/block_jacobi.hpp>
 #include <graphite/optimizer/levenberg_marquardt.hpp>
+
+#include <memory>
 
 
 
@@ -61,7 +64,7 @@ static std::array<Camera*, max_cameras> get_cameras(KeyFrame* pKFi, std::unorder
 };
 
 template <typename FP, typename SP, typename Camera, bool skip_recovery>
-void FullInertialBAInternal(Map *pMap, int its, const bool bFixLocal, const long unsigned int nLoopId, bool *pbStopFlag, bool bInit, float priorG, float priorA, Eigen::VectorXd *vSingVal, bool *bHess)
+void FullInertialBAInternal(bool use_pcg, Map *pMap, int its, const bool bFixLocal, const long unsigned int nLoopId, bool *pbStopFlag, bool bInit, float priorG, float priorA, Eigen::VectorXd *vSingVal, bool *bHess)
 {
     using namespace graphite;
     using namespace gpu;
@@ -86,14 +89,13 @@ void FullInertialBAInternal(Map *pMap, int its, const bool bFixLocal, const long
     Graph<FP, SP> graph;
     StreamPool streams(7); // 1 works - is there a problem with 7?
     BlockJacobiPreconditioner<FP, SP> preconditioner;
-    const FP rejection_ratio = std::numeric_limits<FP>::infinity();
-    // const FP rejection_ratio = 1.0; // No rejection
-    // PCGSolver<FP, SP> solver(50, 1.0e-6, std::numeric_limits<FP>::infinity(), &preconditioner);
-    // PCGSolver<FP, SP> solver(100, 1.0e-12, 10.0, &preconditioner);
-    cudssSchurSolver<FP, SP> solver;
+    std::unique_ptr<Solver<FP, SP>> solver;
+    if (use_pcg) {
+        solver = std::make_unique<PCGSolver<FP, SP>>(100, 1.0e-12, 10.0, &preconditioner);
+    } else {
+        solver = std::make_unique<cudssSchurSolver<FP, SP>>();
+    }
     graph.scale_system(false);
-    // PCGSolver<FP, SP> solver(10, 1.0, 5.0, &preconditioner); // fast, but too inaccurate
-    // good parameters:     PCGSolver<FP, SP> solver(50, 1e-6, std::numeric_limits<FP>::infinity(), &preconditioner); 
     constexpr uint8_t optimization_level = 0;
     const double lambda = 1e-5;
 
@@ -610,7 +612,7 @@ void FullInertialBAInternal(Map *pMap, int its, const bool bFixLocal, const long
     options.optimization_level = optimization_level;
     options.streams = &streams;
     options.stop_flag = pbStopFlag;
-    options.solver = &solver;
+    options.solver = solver.get();
     options.verbose = true;
     options.use_identity = true;
 
@@ -759,15 +761,15 @@ void FullInertialBAInternal(Map *pMap, int its, const bool bFixLocal, const long
     cleanup_cameras();
 }
 
-void FullInertialBA(Map *pMap, int its, const bool bFixLocal, const long unsigned int nLoopId, bool *pbStopFlag, bool bInit, float priorG, float priorA, Eigen::VectorXd *vSingVal, bool *bHess) {
+void FullInertialBA(bool use_pcg, Map *pMap, int its, const bool bFixLocal, const long unsigned int nLoopId, bool *pbStopFlag, bool bInit, float priorG, float priorA, Eigen::VectorXd *vSingVal, bool *bHess) {
     using namespace gpu;
     const vector<KeyFrame*> vpKFs = pMap->GetAllKeyFrames();
     KeyFrame* pKF = vpKFs.front();
     if (pKF->mpCamera->GetType() == ORB_SLAM3::GeometricCamera::CAM_PINHOLE) {
-        OptimizerGPU::FullInertialBAInternal<double, double, PinholeCamera<double>, false>(pMap, its, bFixLocal, nLoopId, pbStopFlag, bInit, priorG, priorA, vSingVal, bHess);
+        OptimizerGPU::FullInertialBAInternal<double, double, PinholeCamera<double>, false>(use_pcg, pMap, its, bFixLocal, nLoopId, pbStopFlag, bInit, priorG, priorA, vSingVal, bHess);
     }
     else {
-        OptimizerGPU::FullInertialBAInternal<double, double, KannalaBrandt8Camera<double>, false>(pMap, its, bFixLocal, nLoopId, pbStopFlag, bInit, priorG, priorA, vSingVal, bHess);
+        OptimizerGPU::FullInertialBAInternal<double, double, KannalaBrandt8Camera<double>, false>(use_pcg, pMap, its, bFixLocal, nLoopId, pbStopFlag, bInit, priorG, priorA, vSingVal, bHess);
     }
 }
 

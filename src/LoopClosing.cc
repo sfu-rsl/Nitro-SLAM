@@ -2735,7 +2735,7 @@ void LoopClosing::ResetIfRequested()
 }
 
 void LoopClosing::RunGlobalBundleAdjustment(Map* pActiveMap, unsigned long nLoopKF)
-{  
+{
     Verbose::PrintMess("Starting Global Bundle Adjustment", Verbose::VERBOSITY_NORMAL);
 
 #ifdef REGISTER_TIMES
@@ -2751,6 +2751,10 @@ void LoopClosing::RunGlobalBundleAdjustment(Map* pActiveMap, unsigned long nLoop
 
     if(!bImuInit)
         Optimizer::GlobalBundleAdjustemnt(pActiveMap,10,&mbStopGBA,nLoopKF,false);
+    else if(LoopClosingKernelController::graphOptimizationOnGPU) {
+        const bool use_pcg = pActiveMap->KeyFramesInMap() >= 200;
+        OptimizerGPU::FullInertialBA(use_pcg,pActiveMap,7,false,nLoopKF,&mbStopGBA);
+    }
     else
         Optimizer::FullInertialBA(pActiveMap,7,false,nLoopKF,&mbStopGBA);
 
