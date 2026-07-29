@@ -1611,7 +1611,8 @@ void LoopClosing::CorrectLoop()
     mpCurrentKF->AddLoopEdge(mpLoopMatchedKF);
 
     // Launch a new thread to perform Global Bundle Adjustment (Only if few keyframes, if not it would take too much time)
-    if(!pLoopMap->isImuInitialized() || (pLoopMap->KeyFramesInMap()<200 && mpAtlas->CountMaps()==1))
+    // unless the GPU GBA path is enabled, which falls back to PCG for large maps instead of skipping GBA entirely.
+    if(!pLoopMap->isImuInitialized() || (mpAtlas->CountMaps()==1 && (pLoopMap->KeyFramesInMap()<200 || LoopClosingKernelController::globalBAOnGPU)))
     {
         mbRunningGBA = true;
         mbFinishedGBA = false;
@@ -2176,7 +2177,7 @@ void LoopClosing::MergeLocal()
 
     mpLocalMapper->Release();
 
-    if(bRelaunchBA && (!pCurrentMap->isImuInitialized() || (pCurrentMap->KeyFramesInMap()<200 && mpAtlas->CountMaps()==1)))
+    if(bRelaunchBA && (!pCurrentMap->isImuInitialized() || (mpAtlas->CountMaps()==1 && (pCurrentMap->KeyFramesInMap()<200 || LoopClosingKernelController::globalBAOnGPU))))
     {
         // Launch a new thread to perform Global Bundle Adjustment
         mbRunningGBA = true;
