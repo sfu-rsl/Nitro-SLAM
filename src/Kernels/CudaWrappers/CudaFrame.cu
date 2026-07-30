@@ -56,6 +56,9 @@ namespace TRACKING_DATA_WRAPPER
     }
 
     CudaFrame::CudaFrame() {
+        mvKeysIsOnGpu = false;
+        mvKeysRightIsOnGpu = false;
+        mDescriptorsIsOnGpu = false;
         initializeMemory();
     }
 
@@ -155,7 +158,7 @@ namespace TRACKING_DATA_WRAPPER
             }
         }
 
-        if (!CudaUtils::cameraIsFisheye) {
+        if (CudaUtils::cameraIsFisheye) {
             for (int i = 0; i < FRAME_GRID_COLS; ++i) {
                 for (int j = 0; j < FRAME_GRID_ROWS; ++j) {
                     size_t num_keypoints = F.mGridRight[i][j].size();
