@@ -78,7 +78,7 @@ Each digit position within a passed bitmask acts as a binary switch (`1` to enab
 1. **1**xxxxx : Merged Sim3 projection search across covisible keyframes for loop-candidate verification on GPU.
 2. x**1**xxxx : Multi-keyframe (up to 3) common-region consistency check across the candidate's covisible keyframes on GPU.
 3. xx**1**xxx : Loop fusion window and duplicate map-point merging on GPU.
-4. xxx**1**xx : Low-level Sim3 projection-search kernel acceleration on GPU (used by the merged search routines above).
+4. xxx**1**xx : Low-level Sim3 projection-search kernel acceleration on GPU.
 5. xxxx**1**x : Pose Graph Optimization (PGO) / Essential Graph backend engine on GPU.
 6. xxxxx**1** : Global Full Inertial Bundle Adjustment (GBA) solver execution on GPU (falls back to a PCG iterative solver instead of the direct cuDSS solver once the map exceeds 200 keyframes).
 

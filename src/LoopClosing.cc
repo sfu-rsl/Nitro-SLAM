@@ -810,7 +810,7 @@ bool LoopClosing::DetectCommonRegionsFromBoW(std::vector<KeyFrame*> &vpBowCand, 
 #ifdef REGISTER_LOOP_CLOSING_STATS
                 std::chrono::steady_clock::time_point time_StartSearchByProjection = std::chrono::steady_clock::now();
 #endif
-                if (LoopClosingKernelController::is_active)
+                if (false && LoopClosingKernelController::is_active)
                 {
 
                     vector<MapPoint*> vpMatchedMP;
