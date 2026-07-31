@@ -810,7 +810,7 @@ bool LoopClosing::DetectCommonRegionsFromBoW(std::vector<KeyFrame*> &vpBowCand, 
 #ifdef REGISTER_LOOP_CLOSING_STATS
                 std::chrono::steady_clock::time_point time_StartSearchByProjection = std::chrono::steady_clock::now();
 #endif
-                if (false && LoopClosingKernelController::is_active)
+                if (LoopClosingKernelController::is_active && LoopClosingKernelController::mergedSearchByProjectionOnGPU)
                 {
 
                     vector<MapPoint*> vpMatchedMP;
@@ -823,65 +823,63 @@ bool LoopClosing::DetectCommonRegionsFromBoW(std::vector<KeyFrame*> &vpBowCand, 
                     g2o::Sim3 gScm(solver.GetEstimatedRotation().cast<double>(),solver.GetEstimatedTranslation().cast<double>(), (double) solver.GetEstimatedScale());
 
                     // auto start6 = std::chrono::high_resolution_clock::now();
-                    if(LoopClosingKernelController::mergedSearchByProjectionOnGPU){
-                        if (mpCurrentKF->NLeft != -1){
-                            vpMatchedMP.resize(mpCurrentKF->GetMapPointMatches().size(), static_cast<MapPoint*>(NULL));
+                    if (mpCurrentKF->NLeft != -1){
+                        vpMatchedMP.resize(mpCurrentKF->GetMapPointMatches().size(), static_cast<MapPoint*>(NULL));
+                    
+                        vpMatchedKF.resize(mpCurrentKF->GetMapPointMatches().size(), static_cast<KeyFrame*>(NULL));
+                                                
                         
-                            vpMatchedKF.resize(mpCurrentKF->GetMapPointMatches().size(), static_cast<KeyFrame*>(NULL));
-                                                    
-                            
-                            g2o::Sim3 gSmw1(pMostBoWMatchesKF->GetRotation().cast<double>(),pMostBoWMatchesKF->GetTranslation().cast<double>(),1.0);
-                            gScw1 = gScm*gSmw1; // Similarity matrix of current from the world position
-                            Sophus::Sim3f mScw1 = Converter::toSophus(gScw1);
-                            
-                            vpMatchedMP1.resize(mpCurrentKF->GetMapPointMatches().size(), static_cast<MapPoint*>(NULL));
-                            
-                            matcher.MergedSearchByProjection(mpCurrentKF, vpMapPoints, mScw1,
-                                                            vpKeyFrames, vpMatchedMP, vpMatchedKF, 8, 1.5,
-                                                            vpMatchedMP1, 5, 1.0,
-                                                            numProjMatches, numProjOptMatches);
+                        g2o::Sim3 gSmw1(pMostBoWMatchesKF->GetRotation().cast<double>(),pMostBoWMatchesKF->GetTranslation().cast<double>(),1.0);
+                        gScw1 = gScm*gSmw1; // Similarity matrix of current from the world position
+                        Sophus::Sim3f mScw1 = Converter::toSophus(gScw1);
+                        
+                        vpMatchedMP1.resize(mpCurrentKF->GetMapPointMatches().size(), static_cast<MapPoint*>(NULL));
+                        
+                        matcher.MergedSearchByProjection(mpCurrentKF, vpMapPoints, mScw1,
+                                                        vpKeyFrames, vpMatchedMP, vpMatchedKF, 8, 1.5,
+                                                        vpMatchedMP1, 5, 1.0,
+                                                        numProjMatches, numProjOptMatches);
 
-                            if(numProjMatches >= nProjMatches)
-                            {
-                                // auto start7 = std::chrono::high_resolution_clock::now();
-                                
-                                Eigen::Matrix<double, 7, 7> mHessian7x7;
-                                bool bFixedScale = mbFixScale;
-                                if(mpTracker->mSensor==System::IMU_MONOCULAR && !mpCurrentKF->GetMap()->GetIniertialBA2())
-                                    bFixedScale=false;
+                        if(numProjMatches >= nProjMatches)
+                        {
+                            // auto start7 = std::chrono::high_resolution_clock::now();
+                            
+                            Eigen::Matrix<double, 7, 7> mHessian7x7;
+                            bool bFixedScale = mbFixScale;
+                            if(mpTracker->mSensor==System::IMU_MONOCULAR && !mpCurrentKF->GetMap()->GetIniertialBA2())
+                                bFixedScale=false;
 
-                                numOptMatches = Optimizer::OptimizeSim3(mpCurrentKF, pKFi, vpMatchedMP, gScm, 10, mbFixScale, mHessian7x7, true);
-                            }
+                            numOptMatches = Optimizer::OptimizeSim3(mpCurrentKF, pKFi, vpMatchedMP, gScm, 10, mbFixScale, mHessian7x7, true);
                         }
+                    }
 
-                        else if(mpCurrentKF->NLeft == -1){
-                            g2o::Sim3 gSmw(pMostBoWMatchesKF->GetRotation().cast<double>(),pMostBoWMatchesKF->GetTranslation().cast<double>(),1.0);
-                            g2o::Sim3 gScw = gScm*gSmw; // Similarity matrix of current from the world position
-                            Sophus::Sim3f mScw = Converter::toSophus(gScw);
+                    else if(mpCurrentKF->NLeft == -1){
+                        g2o::Sim3 gSmw(pMostBoWMatchesKF->GetRotation().cast<double>(),pMostBoWMatchesKF->GetTranslation().cast<double>(),1.0);
+                        g2o::Sim3 gScw = gScm*gSmw; // Similarity matrix of current from the world position
+                        Sophus::Sim3f mScw = Converter::toSophus(gScw);
 
-                            vpMatchedMP.resize(mpCurrentKF->GetMapPointMatches().size(), static_cast<MapPoint*>(NULL));
-                            vpMatchedKF.resize(mpCurrentKF->GetMapPointMatches().size(), static_cast<KeyFrame*>(NULL));
+                        vpMatchedMP.resize(mpCurrentKF->GetMapPointMatches().size(), static_cast<MapPoint*>(NULL));
+                        vpMatchedKF.resize(mpCurrentKF->GetMapPointMatches().size(), static_cast<KeyFrame*>(NULL));
 
-                            numProjMatches = matcher.SearchByProjection(mpCurrentKF, mScw, vpMapPoints, vpKeyFrames, vpMatchedMP, vpMatchedKF, 8, 1.5);
-                            
-                            if(numProjMatches >= nProjMatches) 
-                            {
-                                Eigen::Matrix<double, 7, 7> mHessian7x7;
-                                bool bFixedScale = mbFixScale;
-                                if(mpTracker->mSensor==System::IMU_MONOCULAR && !mpCurrentKF->GetMap()->GetIniertialBA2())
-                                    bFixedScale=false;
-                                numOptMatches = Optimizer::OptimizeSim3(mpCurrentKF, pKFi, vpMatchedMP, gScm, 10, mbFixScale, mHessian7x7, true);
+                        numProjMatches = matcher.SearchByProjection(mpCurrentKF, mScw, vpMapPoints, vpKeyFrames, vpMatchedMP, vpMatchedKF, 8, 1.5);
+                        
+                        if(numProjMatches >= nProjMatches) 
+                        {
+                            Eigen::Matrix<double, 7, 7> mHessian7x7;
+                            bool bFixedScale = mbFixScale;
+                            if(mpTracker->mSensor==System::IMU_MONOCULAR && !mpCurrentKF->GetMap()->GetIniertialBA2())
+                                bFixedScale=false;
+                            numOptMatches = Optimizer::OptimizeSim3(mpCurrentKF, pKFi, vpMatchedMP, gScm, 10, mbFixScale, mHessian7x7, true);
 
-                                if(numOptMatches >= nSim3Inliers) {
+                            if(numOptMatches >= nSim3Inliers) {
 
-                                    g2o::Sim3 gSmw1(pMostBoWMatchesKF->GetRotation().cast<double>(),pMostBoWMatchesKF->GetTranslation().cast<double>(),1.0);
-                                    gScw1 = gScm*gSmw1; // Similarity matrix of current from the world position
-                                    Sophus::Sim3f mScw1 = Converter::toSophus(gScw1);
+                                g2o::Sim3 gSmw1(pMostBoWMatchesKF->GetRotation().cast<double>(),pMostBoWMatchesKF->GetTranslation().cast<double>(),1.0);
+                                gScw1 = gScm*gSmw1; // Similarity matrix of current from the world position
+                                Sophus::Sim3f mScw1 = Converter::toSophus(gScw1);
 
-                                    vpMatchedMP1.resize(mpCurrentKF->GetMapPointMatches().size(), static_cast<MapPoint*>(NULL));
-                                        
-                                    numProjOptMatches = matcher.SearchByProjection(mpCurrentKF, mScw1, vpMapPoints, vpMatchedMP1, 5, 1.0);
-                                }
+                                vpMatchedMP1.resize(mpCurrentKF->GetMapPointMatches().size(), static_cast<MapPoint*>(NULL));
+                                    
+                                numProjOptMatches = matcher.SearchByProjection(mpCurrentKF, mScw1, vpMapPoints, vpMatchedMP1, 5, 1.0);
                             }
                         }
                     }
@@ -1131,30 +1129,88 @@ bool LoopClosing::DetectCommonRegionsFromBoW(std::vector<KeyFrame*> &vpBowCand, 
 
                                 int j = 0;
                                 
-                                while(nNumKFs < 3 && j<vpCurrentCovKFs.size())
-                                {
-                                    KeyFrame* pKFj = vpCurrentCovKFs[j];
-                                    Sophus::SE3d mTjc = (pKFj->GetPose() * mpCurrentKF->GetPoseInverse()).cast<double>();
-                                    g2o::Sim3 gSjc(mTjc.unit_quaternion(),mTjc.translation(),1.0);
-                                    g2o::Sim3 gSjw = gSjc * gScw;
-                                    int numProjMatches_j = 0;
-                                    vector<MapPoint*> vpMatchedMPs_j;
+                                if(LoopClosingKernelController::merged3SearchByProjectionOnGPU){
 
-                                    // auto start9 = std::chrono::high_resolution_clock::now();
-                                    bool bValid = DetectCommonRegionsFromLastKF(pKFj,pMostBoWMatchesKF, gSjw,numProjMatches_j, vpMapPoints, vpMatchedMPs_j);
-                                    // auto end9 = std::chrono::high_resolution_clock::now();
-                                    // std::chrono::duration<double, std::milli> elapsed9 = end9 - start9;
-                                    // timing << "- DetectCommonRegionsFromLastKF: " << elapsed9.count() << " ms" << std::endl;
-
-                                    if(bValid)
-                                    {
-                                        Sophus::SE3f Tc_w = mpCurrentKF->GetPose();
-                                        Sophus::SE3f Tw_cj = pKFj->GetPoseInverse();
-                                        Sophus::SE3f Tc_cj = Tc_w * Tw_cj;
-                                        Eigen::Vector3f vector_dist = Tc_cj.translation();
-                                        nNumKFs++;
+                                    vector<KeyFrame*> currentCovKFs;
+                                    vector<Sophus::Sim3f> currentCovmScws;
+                                    bool bValid[3];
+                                    int num_matches[3] = {0};
+                                    int covKFsSize = std::min<size_t>(3, vpCurrentCovKFs.size());
+                                    for(int i=0; i<covKFsSize; i++){
+                                        currentCovKFs.push_back(vpCurrentCovKFs[i]);
+                                        
+                                        Sophus::SE3d mTjc = (currentCovKFs[i]->GetPose() * mpCurrentKF->GetPoseInverse()).cast<double>();
+                                        g2o::Sim3 gSjc(mTjc.unit_quaternion(),mTjc.translation(),1.0);
+                                        g2o::Sim3 gSjw = gSjc * gScw;
+                                        Sophus::Sim3f mScw = Converter::toSophus(gSjw);
+                                        currentCovmScws.push_back(mScw); 
                                     }
-                                    j++;
+                                    // auto start10 = std::chrono::high_resolution_clock::now();
+                                    GPUDetectCommonRegionsFromLastKF(currentCovKFs, currentCovmScws, pMostBoWMatchesKF, vpMapPoints, num_matches, covKFsSize);
+                                    // auto end10 = std::chrono::high_resolution_clock::now();
+                                    // std::chrono::duration<double, std::milli> elapsed10 = end10 - start10;
+                                    // timing << "- 3D: " << elapsed10.count() << " ms" << std::endl;
+
+                                    int nProjMatches = 30;
+                                    for(int i=0; i<covKFsSize; i++){
+                                        if(num_matches[i] >= nProjMatches){
+                                            bValid[i] = true;
+                                            Sophus::SE3f Tc_w = mpCurrentKF->GetPose();
+                                            Sophus::SE3f Tw_cj = currentCovKFs[i]->GetPoseInverse();
+                                            Sophus::SE3f Tc_cj = Tc_w * Tw_cj;
+                                            Eigen::Vector3f vector_dist = Tc_cj.translation();
+                                            nNumKFs++;
+                                        }
+                                        bValid[i] = false;
+                                    }
+                                    
+                                    j=3;
+                                    while(nNumKFs < 3 && j<vpCurrentCovKFs.size())
+                                    {
+                                        KeyFrame* pKFj = vpCurrentCovKFs[j];
+                                        Sophus::SE3d mTjc = (pKFj->GetPose() * mpCurrentKF->GetPoseInverse()).cast<double>();
+                                        g2o::Sim3 gSjc(mTjc.unit_quaternion(),mTjc.translation(),1.0);
+                                        g2o::Sim3 gSjw = gSjc * gScw;
+                                        int numProjMatches_j = 0;
+                                        vector<MapPoint*> vpMatchedMPs_j;
+                                        
+                                        
+                                        bool bValid = DetectCommonRegionsFromLastKF(pKFj,pMostBoWMatchesKF, gSjw,numProjMatches_j, vpMapPoints, vpMatchedMPs_j);
+                                        
+                                        if(bValid)
+                                        {
+                                            Sophus::SE3f Tc_w = mpCurrentKF->GetPose();
+                                            Sophus::SE3f Tw_cj = pKFj->GetPoseInverse();
+                                            Sophus::SE3f Tc_cj = Tc_w * Tw_cj;
+                                            Eigen::Vector3f vector_dist = Tc_cj.translation();
+                                            nNumKFs++;
+                                        }
+                                        j++;
+                                    }
+                                }
+                                else{
+                                    while(nNumKFs < 3 && j<vpCurrentCovKFs.size())
+                                    {
+                                        KeyFrame* pKFj = vpCurrentCovKFs[j];
+                                        Sophus::SE3d mTjc = (pKFj->GetPose() * mpCurrentKF->GetPoseInverse()).cast<double>();
+                                        g2o::Sim3 gSjc(mTjc.unit_quaternion(),mTjc.translation(),1.0);
+                                        g2o::Sim3 gSjw = gSjc * gScw;
+                                        int numProjMatches_j = 0;
+                                        vector<MapPoint*> vpMatchedMPs_j;
+                                        
+                                        
+                                        bool bValid = DetectCommonRegionsFromLastKF(pKFj,pMostBoWMatchesKF, gSjw,numProjMatches_j, vpMapPoints, vpMatchedMPs_j);
+                                        
+                                        if(bValid)
+                                        {
+                                            Sophus::SE3f Tc_w = mpCurrentKF->GetPose();
+                                            Sophus::SE3f Tw_cj = pKFj->GetPoseInverse();
+                                            Sophus::SE3f Tc_cj = Tc_w * Tw_cj;
+                                            Eigen::Vector3f vector_dist = Tc_cj.translation();
+                                            nNumKFs++;
+                                        }
+                                        j++;
+                                    }
                                 }
 
                                 if(nNumKFs < 3)
