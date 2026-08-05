@@ -30,9 +30,12 @@ if [ -z "$system_name" ]; then
 fi
 
 # Defaults
-kernel_status_FT='11110'
-kernel_status_TM='1111'
-kernel_status_FL='111111'
+kernel_status_FT='11111' # all - don't skip pose optimization (last flag)
+kernel_status_TM='1111' # all
+
+# kernel_status_FL='111111'
+kernel_status_FL='001111' # disable merged projection search
+
 
 # Optional arguments
 kernel_status1=${7:-}

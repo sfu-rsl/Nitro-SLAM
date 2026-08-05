@@ -215,16 +215,17 @@ void LocalMapping::Run()
                         }
 
                         bool bLarge = ((mpTracker->GetMatchesInliers()>75)&&mbMonocular)||((mpTracker->GetMatchesInliers()>100)&&!mbMonocular);
-
+                        auto tl0 = std::chrono::steady_clock::now();
                         if (MappingKernelController::LBAOnGPU) {
                             OptimizerGPU::LocalInertialBA(mpCurrentKeyFrame, &mbAbortBA, mpCurrentKeyFrame->GetMap(),num_FixedKF_BA,num_OptKF_BA,num_MPs_BA,num_edges_BA, bLarge, !mpCurrentKeyFrame->GetMap()->GetIniertialBA2());
                         }
                         else {
                             Optimizer::LocalInertialBA(mpCurrentKeyFrame, &mbAbortBA, mpCurrentKeyFrame->GetMap(),num_FixedKF_BA,num_OptKF_BA,num_MPs_BA,num_edges_BA, bLarge, !mpCurrentKeyFrame->GetMap()->GetIniertialBA2());
                         }
-                        
                         // Mark as finished
                         b_doneLBA = true;
+                        auto tl1 = std::chrono::steady_clock::now();
+                        // std::cout << "LIBA took " << std::chrono::duration_cast<std::chrono::duration<double,std::milli> >(tl1 - tl0).count() << " ms" << std::endl;
                     }
                     else
                     {

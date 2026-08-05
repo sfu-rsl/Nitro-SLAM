@@ -1,9 +1,9 @@
-cmake_minimum_required(VERSION 2.8)
+cmake_minimum_required(VERSION 3.5)
 project(ORB_SLAM3 LANGUAGES CUDA CXX)
 set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} --expt-relaxed-constexpr --extended-lambda --default-stream per-thread")
 if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
   # set(CMAKE_CUDA_ARCHITECTURES 75 80 86 87 89 90 120)
-  set(CMAKE_CUDA_ARCHITECTURES 86) # RTX 3000 Series -> 86
+  set(CMAKE_CUDA_ARCHITECTURES native) # RTX 3000 Series -> 86, RTX 5080 -> 120
 endif()
 
 

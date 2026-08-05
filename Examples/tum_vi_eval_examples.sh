@@ -12,11 +12,18 @@ statsDir=$8
 
 file_name="dataset-${dataset_name}_stereoi"
 
+# Outdoor sequences need the far-field config, everything else uses the default one
+if [[ "${dataset_name}" == *outdoors* ]]; then
+  config_file=Stereo-Inertial/TUM-VI_far.yaml
+else
+  config_file=Stereo-Inertial/TUM-VI.yaml
+fi
+
 # EXECUTABLE=./Stereo-Inertial/stereo_inertial_tum_vi
 # ARGS="../Vocabulary/ORBvoc.txt Stereo-Inertial/TUM-VI.yaml ${pathDatasetTUM_VI}/dataset-${dataset_name}_512_16/mav0/cam0/data ${pathDatasetTUM_VI}/dataset-${dataset_name}_512_16/mav0/cam1/data Stereo-Inertial/TUM_TimeStamps/dataset-${dataset_name}_512.txt Stereo-Inertial/TUM_IMU/dataset-${dataset_name}_512.txt  ${file_name} ${statsDir} ${FastTrack_on} ${TurboMap_on} ${FastLoop_on} ${kernel_status_FT} ${kernel_status_TM}" ${kernel_status_FL}
 # gdb -ex "set args $ARGS" -ex "run" ./Stereo-Inertial/stereo_inertial_tum_vi
 # compute-sanitizer --tool memcheck --report-api-errors all --show-backtrace no ./Stereo-Inertial/stereo_inertial_tum_vi ../Vocabulary/ORBvoc.txt Stereo-Inertial/TUM-VI.yaml ${pathDatasetTUM_VI}/dataset-${dataset_name}_512_16/mav0/cam0/data ${pathDatasetTUM_VI}/dataset-${dataset_name}_512_16/mav0/cam1/data Stereo-Inertial/TUM_TimeStamps/dataset-${dataset_name}_512.txt Stereo-Inertial/TUM_IMU/dataset-${dataset_name}_512.txt ${statsDir} ${FastTrack_on} ${TurboMap_on} ${FastLoop_on} ${kernel_status_FT} ${kernel_status_TM} ${kernel_status_FL}
-CUDA_MODULE_LOADING=EAGER ./Stereo-Inertial/stereo_inertial_tum_vi ../Vocabulary/ORBvoc.txt Stereo-Inertial/TUM-VI.yaml ${pathDatasetTUM_VI}/dataset-${dataset_name}_512_16/mav0/cam0/data ${pathDatasetTUM_VI}/dataset-${dataset_name}_512_16/mav0/cam1/data Stereo-Inertial/TUM_TimeStamps/dataset-${dataset_name}_512.txt Stereo-Inertial/TUM_IMU/dataset-${dataset_name}_512.txt  ${file_name} ${statsDir} ${FastTrack_on} ${TurboMap_on} ${FastLoop_on} ${kernel_status_FT} ${kernel_status_TM} ${kernel_status_FL}
+CUDA_MODULE_LOADING=EAGER ./Stereo-Inertial/stereo_inertial_tum_vi ../Vocabulary/ORBvoc.txt ${config_file} ${pathDatasetTUM_VI}/dataset-${dataset_name}_512_16/mav0/cam0/data ${pathDatasetTUM_VI}/dataset-${dataset_name}_512_16/mav0/cam1/data Stereo-Inertial/TUM_TimeStamps/dataset-${dataset_name}_512.txt Stereo-Inertial/TUM_IMU/dataset-${dataset_name}_512.txt  ${file_name} ${statsDir} ${FastTrack_on} ${TurboMap_on} ${FastLoop_on} ${kernel_status_FT} ${kernel_status_TM} ${kernel_status_FL}
 
 echo "------------------------------------"
 

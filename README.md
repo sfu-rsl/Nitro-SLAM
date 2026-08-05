@@ -55,9 +55,9 @@ Use this script to run an isolated experiment on a specific dataset sequence wit
 
 #### Default Kernel Bitmasks:
 If not explicitly passed, the framework defaults to fully operational bitmasks for activated components:
-* **FastTrack:** `11110`
+* **FastTrack:** `11111`
 * **TurboMap:** `1111`
-* **FastLoop:** `111111`
+* **FastLoop:** `001111`
 
 Each digit position within a passed bitmask acts as a binary switch (`1` to enable, `0` to disable) for a specific algorithmic sub-kernel or routine:
 

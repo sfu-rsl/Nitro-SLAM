@@ -2883,14 +2883,19 @@ void Optimizer::LocalInertialBA(KeyFrame *pKF, bool *pbStopFlag, Map *pMap, int&
         if (mit->second < 3) continue;
         // assert(mit->second>=3);
     }
+    optimizer.setVerbose(false);
 
     optimizer.initializeOptimization();
     optimizer.computeActiveErrors();
     float err = optimizer.activeRobustChi2();
+    // std::cout << "LIBA CPU initial error is " << err << std::endl;
     optimizer.optimize(opt_it); // Originally to 2
     float err_end = optimizer.activeRobustChi2();
     if(pbStopFlag)
         optimizer.setForceStopFlag(pbStopFlag);
+
+    // std::cout << "LIBA CPU end error is " << err_end << std::endl;
+
 
     vector<pair<KeyFrame*,MapPoint*> > vToErase;
     vToErase.reserve(vpEdgesMono.size()+vpEdgesStereo.size());
@@ -2929,6 +2934,7 @@ void Optimizer::LocalInertialBA(KeyFrame *pKF, bool *pbStopFlag, Map *pMap, int&
             vToErase.push_back(make_pair(pKFi,pMP));
         }
     }
+    // std::cout << "LIBA CPU size of vToErase: " << vToErase.size() << std::endl;
 
     // Get Map Mutex and erase outliers
     unique_lock<mutex> lock(pMap->mMutexMapUpdate);

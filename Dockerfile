@@ -26,7 +26,7 @@ RUN apt-get update && apt-get -y install cuda-toolkit-12-8 cuda-gdb-12-8 cudss-c
 
 # ORB-SLAM3 Stuff
 # Install pangolin and python packages for eval
-RUN  apt-get update && apt-get -y install python3-dev python3-setuptools python3-pip && pip3 install matplotlib numpy pandas seaborn
+RUN  apt-get update && apt-get -y install python3-dev python3-setuptools python3-pip && pip3 install matplotlib numpy pandas seaborn cmake
 RUN git clone --branch v0.6 --recursive https://github.com/stevenlovegrove/Pangolin.git && \
 cd Pangolin && \
 cmake -B build -GNinja && \

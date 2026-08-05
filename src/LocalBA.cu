@@ -8,6 +8,8 @@
 // #include "PGOTypes.h"
 #include <graphite/solver/eigen_schur.hpp>
 #include <graphite/optimizer/levenberg_marquardt.hpp>
+#include <graphite/solver/pcg.hpp>
+#include <graphite/preconditioner/block_jacobi.hpp>
 
 
 
@@ -782,10 +784,6 @@ void LocalInertialBAInternal(KeyFrame *pKF, bool *pbStopFlag, Map *pMap, int& nu
         assert(mit->second>=3);
     }
 
-    // optimizer.initializeOptimization();
-    // optimizer.computeActiveErrors();
-    // float err = optimizer.activeRobustChi2();
-    // optimizer.optimize(opt_it); // Originally to 2
     optimizer::LevenbergMarquardtOptions<FP, SP> options;
     options.solver = &solver;
     options.iterations = opt_it;
@@ -794,11 +792,23 @@ void LocalInertialBAInternal(KeyFrame *pKF, bool *pbStopFlag, Map *pMap, int& nu
     options.streams = &streams;
     options.stop_flag = pbStopFlag;
     options.verbose = false;
+    options.use_identity = true;
+    graph.scale_system(false);
+
+    // Compute initial error
+    graph.initialize_optimization(optimization_level);
+    graph.build_structure();
+    graph.compute_error();
+    const FP err = graph.chi2();
+
+    // std::cout << "LIBA initial error is " << err << std::endl;
 
     // std::cout << "LIBA OPTIMIZING!" << std::endl;
     optimizer::levenberg_marquardt2<FP, SP>(&graph, &options);
     // std::cout << "LIBA OPTIMIZATION DONE!" << std::endl;
-    // float err_end = optimizer.activeRobustChi2();
+    const FP err_end = graph.chi2();
+    // std::cout << "LIBA final error is " << err_end << std::endl;
+
     // if(pbStopFlag)
     //     optimizer.setForceStopFlag(pbStopFlag);
 
@@ -861,17 +871,26 @@ void LocalInertialBAInternal(KeyFrame *pKF, bool *pbStopFlag, Map *pMap, int& nu
         }
     }
 
+    // std::cout << "size of vToErase: " << vToErase.size() << std::endl;
     // Get Map Mutex and erase outliers
     unique_lock<mutex> lock(pMap->mMutexMapUpdate);
 
 
     // TODO: Some convergence problems have been detected here
-    // if((2*err < err_end || isnan(err) || isnan(err_end)) && !bLarge) //bGN)
-    // {
-    //     cout << "FAIL LOCAL-INERTIAL BA!!!!" << endl;
-    //     return;
-    // }
-    // TODO: Need to reimplement this - might be related to a bug that was already fixed
+    if((2*err < err_end || std::isnan(err) || std::isnan(err_end)) && !bLarge) //bGN)
+    {
+        cout << "FAIL LOCAL-INERTIAL BA!!!!" << endl;
+        std::cout << "LIBA Failed!" << std::endl;
+
+        // Free camera memory
+        for (auto& [cam_ptr, cam] : cameras) {
+            if (cam) {
+                cudaFree(cam);
+            }
+        }
+
+        return;
+    }
 
 
 
@@ -891,6 +910,8 @@ void LocalInertialBAInternal(KeyFrame *pKF, bool *pbStopFlag, Map *pMap, int& nu
 
     // Recover optimized data
     // Local temporal Keyframes
+    // std::cout << "LIBA recovering points!" << std::endl;
+
     N=vpOptimizableKFs.size();
     for(int i=0; i<N; i++)
     {
@@ -949,6 +970,7 @@ void LocalInertialBAInternal(KeyFrame *pKF, bool *pbStopFlag, Map *pMap, int& nu
     }
 
     pMap->IncreaseChangeIndex();
+    // std::cout << "LIBA deallocating camera!" << std::endl;
 
     // Deallocate cameras
     for (auto& [cam_ptr, cam] : cameras) {
@@ -956,6 +978,8 @@ void LocalInertialBAInternal(KeyFrame *pKF, bool *pbStopFlag, Map *pMap, int& nu
             cudaFree(cam);
         }
     }
+
+    // std::cout << "LIBA Succeeded!" << std::endl;
 
 }
 
