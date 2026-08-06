@@ -70,8 +70,10 @@ ${CMAKE_CUDA_TOOLKIT_INCLUDE_DIRECTORIES}
 # ${PROJECT_SOURCE_DIR}/Thirdparty/g2o/compute-engine/external/kompute/external/VulkanMemoryAllocator/include
 )
 
-add_subdirectory(Thirdparty/graphite)
 set(BUILD_EXAMPLES OFF)
+set(BUILD_DOCS OFF)
+set(BUILD_TESTS OFF)
+add_subdirectory(Thirdparty/graphite)
 
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${PROJECT_SOURCE_DIR}/lib)
 
