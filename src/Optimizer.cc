@@ -42,9 +42,11 @@
 
 #include "OptimizableTypes.h"
 #include "PGOInterface.h"
+#include "LIBAInterface.h"
 #include <memory>
 
 static std::unique_ptr<ORB_SLAM3::PoseGraphOptimizerInterface> pose_graph_optimizer;
+static std::unique_ptr<ORB_SLAM3::LocalInertialBAInterface> local_inertial_ba;
 
 
 namespace ORB_SLAM3
@@ -79,6 +81,18 @@ void init_pgo(unsigned int max_poses, unsigned int max_edges) {
 void cleanup_pgo() {
     if (pose_graph_optimizer) {
         pose_graph_optimizer.reset();
+    }
+}
+
+void init_liba(unsigned int max_keyframes, unsigned int max_map_points, unsigned int max_visual_factors) {
+    if (!local_inertial_ba) {
+        local_inertial_ba = std::make_unique<LocalInertialBAInterface>(max_keyframes, max_map_points, max_visual_factors);
+    }
+}
+
+void cleanup_liba() {
+    if (local_inertial_ba) {
+        local_inertial_ba.reset();
     }
 }
 
@@ -5642,6 +5656,504 @@ void Optimizer::OptimizeEssentialGraph4DoF(Map* pMap, KeyFrame* pLoopKF, KeyFram
 
 namespace OptimizerGPU
 {
+
+// Local inertial BA on the GPU. This is the original CPU implementation with the g2o
+// optimizer replaced by the persistent Graphite optimizer behind LocalInertialBAInterface,
+// so that its (managed and device) allocations are reused between calls.
+void LocalInertialBA2(KeyFrame *pKF, bool *pbStopFlag, Map *pMap, int& num_fixedKF, int& num_OptKF, int& num_MPs, int& num_edges, bool bLarge, bool bRecInit)
+{
+    Map* pCurrentMap = pKF->GetMap();
+
+    int maxOpt=10;
+    int opt_it=10;
+    if(bLarge)
+    {
+        maxOpt=25;
+        opt_it=4;
+    }
+    const int Nd = std::min((int)pCurrentMap->KeyFramesInMap()-2,maxOpt);
+    const unsigned long maxKFid = pKF->mnId;
+
+    vector<KeyFrame*> vpOptimizableKFs;
+    const vector<KeyFrame*> vpNeighsKFs = pKF->GetVectorCovisibleKeyFrames();
+    list<KeyFrame*> lpOptVisKFs;
+
+    vpOptimizableKFs.reserve(Nd);
+    vpOptimizableKFs.push_back(pKF);
+    pKF->mnBALocalForKF = pKF->mnId;
+    for(int i=1; i<Nd; i++)
+    {
+        if(vpOptimizableKFs.back()->mPrevKF)
+        {
+            vpOptimizableKFs.push_back(vpOptimizableKFs.back()->mPrevKF);
+            vpOptimizableKFs.back()->mnBALocalForKF = pKF->mnId;
+        }
+        else
+            break;
+    }
+
+    int N = vpOptimizableKFs.size();
+
+    // Optimizable points seen by temporal optimizable keyframes
+    list<MapPoint*> lLocalMapPoints;
+    for(int i=0; i<N; i++)
+    {
+        vector<MapPoint*> vpMPs = vpOptimizableKFs[i]->GetMapPointMatches();
+        for(vector<MapPoint*>::iterator vit=vpMPs.begin(), vend=vpMPs.end(); vit!=vend; vit++)
+        {
+            MapPoint* pMP = *vit;
+            if(pMP)
+                if(!pMP->isBad())
+                    if(pMP->mnBALocalForKF!=pKF->mnId)
+                    {
+                        lLocalMapPoints.push_back(pMP);
+                        pMP->mnBALocalForKF=pKF->mnId;
+                    }
+        }
+    }
+
+    // Fixed Keyframe: First frame previous KF to optimization window)
+    list<KeyFrame*> lFixedKeyFrames;
+    if(vpOptimizableKFs.back()->mPrevKF)
+    {
+        lFixedKeyFrames.push_back(vpOptimizableKFs.back()->mPrevKF);
+        vpOptimizableKFs.back()->mPrevKF->mnBAFixedForKF=pKF->mnId;
+    }
+    else
+    {
+        vpOptimizableKFs.back()->mnBALocalForKF=0;
+        vpOptimizableKFs.back()->mnBAFixedForKF=pKF->mnId;
+        lFixedKeyFrames.push_back(vpOptimizableKFs.back());
+        vpOptimizableKFs.pop_back();
+    }
+
+    // Optimizable visual KFs
+    const int maxCovKF = 0;
+    for(int i=0, iend=vpNeighsKFs.size(); i<iend; i++)
+    {
+        if(lpOptVisKFs.size() >= maxCovKF)
+            break;
+
+        KeyFrame* pKFi = vpNeighsKFs[i];
+        if(pKFi->mnBALocalForKF == pKF->mnId || pKFi->mnBAFixedForKF == pKF->mnId)
+            continue;
+        pKFi->mnBALocalForKF = pKF->mnId;
+        if(!pKFi->isBad() && pKFi->GetMap() == pCurrentMap)
+        {
+            lpOptVisKFs.push_back(pKFi);
+
+            vector<MapPoint*> vpMPs = pKFi->GetMapPointMatches();
+            for(vector<MapPoint*>::iterator vit=vpMPs.begin(), vend=vpMPs.end(); vit!=vend; vit++)
+            {
+                MapPoint* pMP = *vit;
+                if(pMP)
+                    if(!pMP->isBad())
+                        if(pMP->mnBALocalForKF!=pKF->mnId)
+                        {
+                            lLocalMapPoints.push_back(pMP);
+                            pMP->mnBALocalForKF=pKF->mnId;
+                        }
+            }
+        }
+    }
+
+    // Fixed KFs which are not covisible optimizable
+    const int maxFixKF = 200;
+
+    for(list<MapPoint*>::iterator lit=lLocalMapPoints.begin(), lend=lLocalMapPoints.end(); lit!=lend; lit++)
+    {
+        map<KeyFrame*,tuple<int,int>> observations = (*lit)->GetObservations();
+        for(map<KeyFrame*,tuple<int,int>>::iterator mit=observations.begin(), mend=observations.end(); mit!=mend; mit++)
+        {
+            KeyFrame* pKFi = mit->first;
+
+            if(pKFi->mnBALocalForKF!=pKF->mnId && pKFi->mnBAFixedForKF!=pKF->mnId)
+            {
+                pKFi->mnBAFixedForKF=pKF->mnId;
+                if(!pKFi->isBad())
+                {
+                    lFixedKeyFrames.push_back(pKFi);
+                    break;
+                }
+            }
+        }
+        if(lFixedKeyFrames.size()>=maxFixKF)
+            break;
+    }
+
+    bool bNonFixed = (lFixedKeyFrames.size() == 0);
+
+    // Setup optimizer
+    auto & optimizer = *local_inertial_ba;
+
+    optimizer.set_camera_model(pKF->mpCamera->GetType() == GeometricCamera::CAM_PINHOLE ?
+            LocalInertialBAInterface::CameraModel::Pinhole :
+            LocalInertialBAInterface::CameraModel::KannalaBrandt8);
+
+    optimizer.clear();
+
+    // to avoid iterating for finding optimal lambda
+    const double lambda = bLarge ? 1e-2 : 1e0;
+
+    // Set Local temporal KeyFrame vertices
+    N=vpOptimizableKFs.size();
+
+    const int nExpectedSize = (N+lFixedKeyFrames.size())*lLocalMapPoints.size();
+    optimizer.reserve(vpOptimizableKFs.size() + lpOptVisKFs.size() + lFixedKeyFrames.size(),
+                      lLocalMapPoints.size(), nExpectedSize);
+
+    for(int i=0; i<N; i++)
+    {
+        KeyFrame* pKFi = vpOptimizableKFs[i];
+
+        optimizer.add_pose(pKFi->mnId, pKFi, false);
+
+        if(pKFi->bImu)
+        {
+            optimizer.add_velocity(maxKFid+3*(pKFi->mnId)+1, pKFi, false);
+            optimizer.add_gyro_bias(maxKFid+3*(pKFi->mnId)+2, pKFi, false);
+            optimizer.add_acc_bias(maxKFid+3*(pKFi->mnId)+3, pKFi, false);
+        }
+    }
+
+    // Set Local visual KeyFrame vertices
+    for(list<KeyFrame*>::iterator it=lpOptVisKFs.begin(), itEnd = lpOptVisKFs.end(); it!=itEnd; it++)
+    {
+        KeyFrame* pKFi = *it;
+        optimizer.add_pose(pKFi->mnId, pKFi, false);
+    }
+
+    // Set Fixed KeyFrame vertices
+    for(list<KeyFrame*>::iterator lit=lFixedKeyFrames.begin(), lend=lFixedKeyFrames.end(); lit!=lend; lit++)
+    {
+        KeyFrame* pKFi = *lit;
+        optimizer.add_pose(pKFi->mnId, pKFi, true);
+
+        if(pKFi->bImu) // This should be done only for keyframe just before temporal window
+        {
+            optimizer.add_velocity(maxKFid+3*(pKFi->mnId)+1, pKFi, true);
+            optimizer.add_gyro_bias(maxKFid+3*(pKFi->mnId)+2, pKFi, true);
+            optimizer.add_acc_bias(maxKFid+3*(pKFi->mnId)+3, pKFi, true);
+        }
+    }
+
+    // Create intertial constraints
+    for(int i=0;i<N;i++)
+    {
+        KeyFrame* pKFi = vpOptimizableKFs[i];
+
+        if(!pKFi->mPrevKF)
+        {
+            cout << "NOT INERTIAL LINK TO PREVIOUS FRAME!!!!" << endl;
+            continue;
+        }
+        if(pKFi->bImu && pKFi->mPrevKF->bImu && pKFi->mpImuPreintegrated)
+        {
+            pKFi->mpImuPreintegrated->SetNewBias(pKFi->mPrevKF->GetImuBias());
+
+            const size_t VP1 = pKFi->mPrevKF->mnId;
+            const size_t VV1 = maxKFid+3*(pKFi->mPrevKF->mnId)+1;
+            const size_t VG1 = maxKFid+3*(pKFi->mPrevKF->mnId)+2;
+            const size_t VA1 = maxKFid+3*(pKFi->mPrevKF->mnId)+3;
+            const size_t VP2 = pKFi->mnId;
+            const size_t VV2 = maxKFid+3*(pKFi->mnId)+1;
+            const size_t VG2 = maxKFid+3*(pKFi->mnId)+2;
+            const size_t VA2 = maxKFid+3*(pKFi->mnId)+3;
+
+            if(!optimizer.has_pose(VP1) || !optimizer.has_pose(VP2) ||
+               !optimizer.has_velocity(VV1) || !optimizer.has_velocity(VV2) ||
+               !optimizer.has_gyro_bias(VG1) || !optimizer.has_gyro_bias(VG2) ||
+               !optimizer.has_acc_bias(VA1) || !optimizer.has_acc_bias(VA2))
+            {
+                cerr << "Error " << VP1 << ", "<< VV1 << ", "<< VG1 << ", "<< VA1 << ", " << VP2 << ", " << VV2 <<  ", "<< VG2 << ", "<< VA2 <<endl;
+                continue;
+            }
+
+            if(i==N-1 || bRecInit)
+            {
+                // All inertial residuals are included without robust cost function, but not that one linking the
+                // last optimizable keyframe inside of the local window and the first fixed keyframe out. The
+                // information matrix for this measurement is also downweighted. This is done to avoid accumulating
+                // error due to fixing variables.
+                const double info_scale = (i==N-1) ? 1e-2 : 1.0;
+                optimizer.add_inertial_factor(VP1, VV1, VG1, VA1, VP2, VV2, pKFi->mpImuPreintegrated,
+                                              true, info_scale, sqrt(16.92));
+            }
+            else
+            {
+                optimizer.add_inertial_factor(VP1, VV1, VG1, VA1, VP2, VV2, pKFi->mpImuPreintegrated,
+                                              false, 1.0, 0.0);
+            }
+
+            Eigen::Matrix3d InfoG = pKFi->mpImuPreintegrated->C.block<3,3>(9,9).cast<double>().inverse();
+            optimizer.add_gyro_rw_factor(VG1, VG2, InfoG.data());
+
+            Eigen::Matrix3d InfoA = pKFi->mpImuPreintegrated->C.block<3,3>(12,12).cast<double>().inverse();
+            optimizer.add_acc_rw_factor(VA1, VA2, InfoA.data());
+        }
+        else
+            cout << "ERROR building inertial edge" << endl;
+    }
+
+    // Set MapPoint vertices
+
+    // Mono
+    vector<size_t> mono_ids;
+    mono_ids.reserve(nExpectedSize);
+
+    vector<KeyFrame*> vpEdgeKFMono;
+    vpEdgeKFMono.reserve(nExpectedSize);
+
+    vector<MapPoint*> vpMapPointEdgeMono;
+    vpMapPointEdgeMono.reserve(nExpectedSize);
+
+    // Stereo
+    vector<size_t> stereo_ids;
+    stereo_ids.reserve(nExpectedSize);
+
+    vector<KeyFrame*> vpEdgeKFStereo;
+    vpEdgeKFStereo.reserve(nExpectedSize);
+
+    vector<MapPoint*> vpMapPointEdgeStereo;
+    vpMapPointEdgeStereo.reserve(nExpectedSize);
+
+
+
+    const float thHuberMono = sqrt(5.991);
+    const float chi2Mono2 = 5.991;
+    const float thHuberStereo = sqrt(7.815);
+    const float chi2Stereo2 = 7.815;
+
+    const unsigned long iniMPid = maxKFid*5;
+
+    map<int,int> mVisEdges;
+    for(int i=0;i<N;i++)
+    {
+        KeyFrame* pKFi = vpOptimizableKFs[i];
+        mVisEdges[pKFi->mnId] = 0;
+    }
+    for(list<KeyFrame*>::iterator lit=lFixedKeyFrames.begin(), lend=lFixedKeyFrames.end(); lit!=lend; lit++)
+    {
+        mVisEdges[(*lit)->mnId] = 0;
+    }
+
+    for(list<MapPoint*>::iterator lit=lLocalMapPoints.begin(), lend=lLocalMapPoints.end(); lit!=lend; lit++)
+    {
+        MapPoint* pMP = *lit;
+
+        unsigned long id = pMP->mnId+iniMPid+1;
+        optimizer.add_map_point(id, pMP->GetWorldPos().cast<double>());
+
+        const map<KeyFrame*,tuple<int,int>> observations = pMP->GetObservations();
+
+        // Create visual constraints
+        for(map<KeyFrame*,tuple<int,int>>::const_iterator mit=observations.begin(), mend=observations.end(); mit!=mend; mit++)
+        {
+            KeyFrame* pKFi = mit->first;
+
+            if(pKFi->mnBALocalForKF!=pKF->mnId && pKFi->mnBAFixedForKF!=pKF->mnId)
+                continue;
+
+            if(!pKFi->isBad() && pKFi->GetMap() == pCurrentMap)
+            {
+                const int leftIndex = get<0>(mit->second);
+
+                cv::KeyPoint kpUn;
+
+                // Monocular left observation
+                if(leftIndex != -1 && pKFi->mvuRight[leftIndex]<0)
+                {
+                    mVisEdges[pKFi->mnId]++;
+
+                    kpUn = pKFi->mvKeysUn[leftIndex];
+                    Eigen::Matrix<double,2,1> obs;
+                    obs << kpUn.pt.x, kpUn.pt.y;
+
+                    // Add here uncerteinty
+                    const float unc2 = pKFi->mpCamera->uncertainty2(obs);
+
+                    const float &invSigma2 = pKFi->mvInvLevelSigma2[kpUn.octave]/unc2;
+
+                    const auto f_id = optimizer.add_mono_factor(id, pKFi->mnId, obs, invSigma2, 0, thHuberMono);
+
+                    mono_ids.push_back(f_id);
+                    vpEdgeKFMono.push_back(pKFi);
+                    vpMapPointEdgeMono.push_back(pMP);
+                }
+                // Stereo-observation
+                else if(leftIndex != -1)// Stereo observation
+                {
+                    kpUn = pKFi->mvKeysUn[leftIndex];
+                    mVisEdges[pKFi->mnId]++;
+
+                    const float kp_ur = pKFi->mvuRight[leftIndex];
+                    Eigen::Matrix<double,3,1> obs;
+                    obs << kpUn.pt.x, kpUn.pt.y, kp_ur;
+
+                    // Add here uncerteinty
+                    const float unc2 = pKFi->mpCamera->uncertainty2(obs.head(2));
+
+                    const float &invSigma2 = pKFi->mvInvLevelSigma2[kpUn.octave]/unc2;
+
+                    const auto f_id = optimizer.add_stereo_factor(id, pKFi->mnId, obs, invSigma2, 0, thHuberStereo);
+
+                    stereo_ids.push_back(f_id);
+                    vpEdgeKFStereo.push_back(pKFi);
+                    vpMapPointEdgeStereo.push_back(pMP);
+                }
+
+                // Monocular right observation
+                if(pKFi->mpCamera2){
+                    int rightIndex = get<1>(mit->second);
+
+                    if(rightIndex != -1 ){
+                        rightIndex -= pKFi->NLeft;
+                        mVisEdges[pKFi->mnId]++;
+
+                        Eigen::Matrix<double,2,1> obs;
+                        cv::KeyPoint kp = pKFi->mvKeysRight[rightIndex];
+                        obs << kp.pt.x, kp.pt.y;
+
+                        // Add here uncerteinty
+                        const float unc2 = pKFi->mpCamera->uncertainty2(obs);
+
+                        const float &invSigma2 = pKFi->mvInvLevelSigma2[kpUn.octave]/unc2;
+
+                        const auto f_id = optimizer.add_mono_factor(id, pKFi->mnId, obs, invSigma2, 1, thHuberMono);
+
+                        mono_ids.push_back(f_id);
+                        vpEdgeKFMono.push_back(pKFi);
+                        vpMapPointEdgeMono.push_back(pMP);
+                    }
+                }
+            }
+        }
+    }
+
+    //cout << "Total map points: " << lLocalMapPoints.size() << endl;
+    for(map<int,int>::iterator mit=mVisEdges.begin(), mend=mVisEdges.end(); mit!=mend; mit++)
+    {
+        if (mit->second < 3) continue;
+        // assert(mit->second>=3);
+    }
+
+    double err = 0.0;
+    double err_end = 0.0;
+    optimizer.optimize(opt_it, lambda, pbStopFlag, err, err_end, false);
+
+    vector<pair<KeyFrame*,MapPoint*> > vToErase;
+    vToErase.reserve(mono_ids.size()+stereo_ids.size());
+
+    // Check inlier observations
+    // Mono
+    for(size_t i=0, iend=mono_ids.size(); i<iend;i++)
+    {
+        const auto f_id = mono_ids[i];
+        MapPoint* pMP = vpMapPointEdgeMono[i];
+        bool bClose = pMP->mTrackDepth<10.f;
+
+        if(pMP->isBad())
+            continue;
+
+        const auto mchi2 = optimizer.mono_chi2(f_id);
+        if((mchi2>chi2Mono2 && !bClose) || (mchi2>1.5f*chi2Mono2 && bClose)
+        || !optimizer.mono_depth_positive(f_id))
+        {
+            KeyFrame* pKFi = vpEdgeKFMono[i];
+            vToErase.push_back(make_pair(pKFi,pMP));
+        }
+    }
+
+
+    // Stereo
+    for(size_t i=0, iend=stereo_ids.size(); i<iend;i++)
+    {
+        const auto f_id = stereo_ids[i];
+        MapPoint* pMP = vpMapPointEdgeStereo[i];
+
+        if(pMP->isBad())
+            continue;
+
+        if(optimizer.stereo_chi2(f_id)>chi2Stereo2)
+        {
+            KeyFrame* pKFi = vpEdgeKFStereo[i];
+            vToErase.push_back(make_pair(pKFi,pMP));
+        }
+    }
+
+    // Get Map Mutex and erase outliers
+    unique_lock<mutex> lock(pMap->mMutexMapUpdate);
+
+
+    // TODO: Some convergence problems have been detected here
+    if((2*err < err_end || isnan(err) || isnan(err_end)) && !bLarge) //bGN)
+    {
+        cout << "FAIL LOCAL-INERTIAL BA!!!!" << endl;
+        return;
+    }
+
+
+
+    if(!vToErase.empty())
+    {
+        for(size_t i=0;i<vToErase.size();i++)
+        {
+            KeyFrame* pKFi = vToErase[i].first;
+            MapPoint* pMPi = vToErase[i].second;
+            pKFi->EraseMapPointMatch(pMPi);
+            pMPi->EraseObservation(pKFi);
+        }
+    }
+
+    for(list<KeyFrame*>::iterator lit=lFixedKeyFrames.begin(), lend=lFixedKeyFrames.end(); lit!=lend; lit++)
+        (*lit)->mnBAFixedForKF = 0;
+
+    // Recover optimized data
+    // Local temporal Keyframes
+    N=vpOptimizableKFs.size();
+    for(int i=0; i<N; i++)
+    {
+        KeyFrame* pKFi = vpOptimizableKFs[i];
+
+        const auto pose = optimizer.get_pose(pKFi->mnId);
+        Sophus::SE3f Tcw(pose.Rcw.cast<float>(), pose.tcw.cast<float>());
+        pKFi->SetPose(Tcw);
+        pKFi->mnBALocalForKF=0;
+
+        if(pKFi->bImu)
+        {
+            const auto VV = optimizer.get_velocity(maxKFid+3*(pKFi->mnId)+1);
+            pKFi->SetVelocity(VV.cast<float>());
+
+            const auto VG = optimizer.get_gyro_bias(maxKFid+3*(pKFi->mnId)+2);
+            const auto VA = optimizer.get_acc_bias(maxKFid+3*(pKFi->mnId)+3);
+            Vector6d b;
+            b << VG, VA;
+            pKFi->SetNewBias(IMU::Bias(b[3],b[4],b[5],b[0],b[1],b[2]));
+        }
+    }
+
+    // Local visual KeyFrame
+    for(list<KeyFrame*>::iterator it=lpOptVisKFs.begin(), itEnd = lpOptVisKFs.end(); it!=itEnd; it++)
+    {
+        KeyFrame* pKFi = *it;
+        const auto pose = optimizer.get_pose(pKFi->mnId);
+        Sophus::SE3f Tcw(pose.Rcw.cast<float>(), pose.tcw.cast<float>());
+        pKFi->SetPose(Tcw);
+        pKFi->mnBALocalForKF=0;
+    }
+
+    //Points
+    for(list<MapPoint*>::iterator lit=lLocalMapPoints.begin(), lend=lLocalMapPoints.end(); lit!=lend; lit++)
+    {
+        MapPoint* pMP = *lit;
+        pMP->SetWorldPos(optimizer.get_map_point(pMP->mnId+iniMPid+1).cast<float>());
+        pMP->UpdateNormalAndDepth();
+    }
+
+    pMap->IncreaseChangeIndex();
+}
+
 void OptimizeEssentialGraph4DoF(Map* pMap, KeyFrame* pLoopKF, KeyFrame* pCurKF,
                                        const LoopClosing::KeyFrameAndPose &NonCorrectedSim3,
                                        const LoopClosing::KeyFrameAndPose &CorrectedSim3,

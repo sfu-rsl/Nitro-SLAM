@@ -99,6 +99,7 @@ src/MapDrawer.cc
 src/Optimizer.cc
 src/Optimizer.cu
 src/LocalBA.cu
+src/LIBA.cu
 src/FIBA.cu
 src/Frame.cc
 src/KeyFrameDatabase.cc
@@ -202,6 +203,7 @@ include/GPUTypes.h
 include/GPUImu.h
 include/PGOTypes.h
 include/PGOInterface.h
+include/LIBAInterface.h
 )
 
 set_target_properties( ${PROJECT_NAME}

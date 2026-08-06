@@ -84,6 +84,8 @@ void LocalMapping::Run()
 {
     mbFinished = false;
 
+    init_liba(256, 10000, 100000);
+
     // LocalMappingStats stats = LocalMappingStats::getInstance();
 
     while(1)
@@ -217,7 +219,8 @@ void LocalMapping::Run()
                         bool bLarge = ((mpTracker->GetMatchesInliers()>75)&&mbMonocular)||((mpTracker->GetMatchesInliers()>100)&&!mbMonocular);
                         auto tl0 = std::chrono::steady_clock::now();
                         if (MappingKernelController::LBAOnGPU) {
-                            OptimizerGPU::LocalInertialBA(mpCurrentKeyFrame, &mbAbortBA, mpCurrentKeyFrame->GetMap(),num_FixedKF_BA,num_OptKF_BA,num_MPs_BA,num_edges_BA, bLarge, !mpCurrentKeyFrame->GetMap()->GetIniertialBA2());
+                            // OptimizerGPU::LocalInertialBA is the original Graphite implementation (LocalBA.cu)
+                            OptimizerGPU::LocalInertialBA2(mpCurrentKeyFrame, &mbAbortBA, mpCurrentKeyFrame->GetMap(),num_FixedKF_BA,num_OptKF_BA,num_MPs_BA,num_edges_BA, bLarge, !mpCurrentKeyFrame->GetMap()->GetIniertialBA2());
                         }
                         else {
                             Optimizer::LocalInertialBA(mpCurrentKeyFrame, &mbAbortBA, mpCurrentKeyFrame->GetMap(),num_FixedKF_BA,num_OptKF_BA,num_MPs_BA,num_edges_BA, bLarge, !mpCurrentKeyFrame->GetMap()->GetIniertialBA2());
@@ -225,7 +228,7 @@ void LocalMapping::Run()
                         // Mark as finished
                         b_doneLBA = true;
                         auto tl1 = std::chrono::steady_clock::now();
-                        // std::cout << "LIBA took " << std::chrono::duration_cast<std::chrono::duration<double,std::milli> >(tl1 - tl0).count() << " ms" << std::endl;
+                        std::cout << "LIBA took " << std::chrono::duration_cast<std::chrono::duration<double,std::milli> >(tl1 - tl0).count() << " ms" << std::endl;
                     }
                     else
                     {
@@ -392,6 +395,7 @@ void LocalMapping::Run()
     }
 
     SetFinish();
+    cleanup_liba();
 }
 
 void LocalMapping::InsertKeyFrame(KeyFrame *pKF)

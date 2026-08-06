@@ -108,6 +108,9 @@ public:
 
 namespace OptimizerGPU {
     void LocalInertialBA(KeyFrame* pKF, bool *pbStopFlag, Map *pMap, int& num_fixedKF, int& num_OptKF, int& num_MPs, int& num_edges, bool bLarge = false, bool bRecInit = false);
+    // Same as LocalInertialBA, but built on top of the persistent optimizer in LIBAInterface.h
+    // so that the allocations are reused between calls.
+    void LocalInertialBA2(KeyFrame* pKF, bool *pbStopFlag, Map *pMap, int& num_fixedKF, int& num_OptKF, int& num_MPs, int& num_edges, bool bLarge = false, bool bRecInit = false);
     void FullInertialBA(bool use_pcg, Map *pMap, int its, const bool bFixLocal=false, const unsigned long nLoopKF=0, bool *pbStopFlag=NULL, bool bInit=false, float priorG = 1e2, float priorA=1e6, Eigen::VectorXd *vSingVal = NULL, bool *bHess=NULL);
     void OptimizeEssentialGraph4DoF(Map* pMap, KeyFrame* pLoopKF, KeyFrame* pCurKF,
                                        const LoopClosing::KeyFrameAndPose &NonCorrectedSim3,
@@ -117,6 +120,9 @@ namespace OptimizerGPU {
 
 void init_pgo(const unsigned int max_poses, const unsigned int max_edges);
 void cleanup_pgo();
+
+void init_liba(const unsigned int max_keyframes, const unsigned int max_map_points, const unsigned int max_visual_factors);
+void cleanup_liba();
 
 } //namespace ORB_SLAM3
 
