@@ -616,7 +616,7 @@ void FullInertialBAInternal(bool use_pcg, Map *pMap, int its, const bool bFixLoc
     options.verbose = true;
     options.use_identity = true;
 
-    optimizer::levenberg_marquardt<FP, SP>(&graph, &options);
+    optimizer::levenberg_marquardt2<FP, SP>(&graph, &options);
     
     // print graph info
     // print counts of vds
