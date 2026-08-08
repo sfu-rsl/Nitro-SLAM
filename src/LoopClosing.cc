@@ -298,6 +298,7 @@ void LoopClosing::Run()
 
                     auto start2 = std::chrono::high_resolution_clock::now();
                     if (bGoodLoop) {
+                        std::cout << "Good loop found!" << std::endl;
 
                         mvpLoopMapPoints = mvpLoopMPs;
 
@@ -2822,6 +2823,7 @@ void LoopClosing::RunGlobalBundleAdjustment(Map* pActiveMap, unsigned long nLoop
 
     double timeGBA = std::chrono::duration_cast<std::chrono::duration<double,std::milli> >(time_EndGBA - time_StartFGBA).count();
     vdGBA_ms.push_back(timeGBA);
+    std::cout << "Global BA took " << timeGBA << " ms" << std::endl;
 
     if(mbStopGBA)
     {
