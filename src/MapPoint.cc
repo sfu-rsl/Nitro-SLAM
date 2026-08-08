@@ -22,6 +22,7 @@
 #include "Kernels/MappingKernelController.h"
 
 #include<mutex>
+#include<algorithm>
 
 namespace ORB_SLAM3
 {
@@ -125,7 +126,6 @@ void MapPoint::SetWorldPos(const Eigen::Vector3f &Pos) {
     unique_lock<mutex> lock2(mGlobalMutex);
     unique_lock<mutex> lock(mMutexPos);
     mWorldPos = Pos;
-    scaleObservationsCount.resize(8, 0);
 }
 
 Eigen::Vector3f MapPoint::GetWorldPos() {
@@ -145,26 +145,45 @@ KeyFrame* MapPoint::GetReferenceKeyFrame()
     return mpRefKF;
 }
 
+int MapPoint::ObservationScaleLevel(KeyFrame* pKF, const tuple<int,int> &indexes)
+{
+    const int leftIndex = get<0>(indexes), rightIndex = get<1>(indexes);
+
+    if(pKF->NLeft == -1)
+        return (leftIndex != -1) ? pKF->mvKeysUn[leftIndex].octave : -1;
+
+    int scaleLevel = -1;
+    if(leftIndex != -1)
+        scaleLevel = pKF->mvKeys[leftIndex].octave;
+    if(rightIndex != -1)
+    {
+        const int rightLevel = pKF->mvKeysRight[rightIndex - pKF->NLeft].octave;
+        scaleLevel = (scaleLevel == -1 || scaleLevel > rightLevel) ? rightLevel : scaleLevel;
+    }
+    return scaleLevel;
+}
+
+void MapPoint::UpdateScaleObservationsCount(int scaleLevel, int delta)
+{
+    if(scaleLevel < 0)
+        return;
+    if(scaleLevel >= (int)scaleObservationsCount.size())
+        scaleObservationsCount.resize(scaleLevel+1, 0);
+    scaleObservationsCount[scaleLevel] += delta;
+}
+
 void MapPoint::AddObservation(KeyFrame* pKF, int idx)
 {
     unique_lock<mutex> lock(mMutexFeatures);
     tuple<int,int> indexes;
 
-    if(mObservations.count(pKF)){
-        indexes = mObservations[pKF];
-        int scaleLevel = -1, leftIndex = get<0>(indexes), rightIndex = get<1>(indexes);
-        if (pKF->NLeft == -1)
-            scaleLevel = pKF->mvKeysUn[leftIndex].octave;
-        else {
-            if (leftIndex != -1) {
-                scaleLevel = pKF->mvKeys[leftIndex].octave;
-            }
-            if (rightIndex != -1) {
-                int rightLevel = pKF->mvKeysRight[rightIndex - pKF->NLeft].octave;
-                scaleLevel = (scaleLevel == -1 || scaleLevel > rightLevel) ? rightLevel : scaleLevel;
-            }
-        }
-        scaleObservationsCount[scaleLevel]--;
+    map<KeyFrame*,tuple<int,int>>::iterator it = mObservations.find(pKF);
+    if(it != mObservations.end()){
+        indexes = it->second;
+        // Take the entry out of the bucket it is currently filed under. This must use
+        // the stored pair, not idx: adding the other fisheye image's observation of the
+        // same point can move which octave the keyframe is filed at.
+        UpdateScaleObservationsCount(ObservationScaleLevel(pKF, indexes), -1);
     }
     else{
         indexes = tuple<int,int>(-1,-1);
@@ -184,11 +203,7 @@ void MapPoint::AddObservation(KeyFrame* pKF, int idx)
     else
         nObs++;
 
-    int scaleLevel = (pKF->NLeft == -1) ? pKF->mvKeysUn[idx].octave
-                                        : (idx < pKF->NLeft) ? pKF->mvKeys[idx].octave
-                                                             : pKF->mvKeysRight[idx - pKF->NLeft].octave;
-
-    scaleObservationsCount[scaleLevel]++;
+    UpdateScaleObservationsCount(ObservationScaleLevel(pKF, indexes), 1);
 }
 
 void MapPoint::EraseObservation(KeyFrame* pKF)
@@ -213,20 +228,7 @@ void MapPoint::EraseObservation(KeyFrame* pKF)
 
             mObservations.erase(pKF);
 
-            int scaleLevel = -1;
-            if (pKF->NLeft == -1)
-                scaleLevel = pKF->mvKeysUn[leftIndex].octave;
-            else {
-                if (leftIndex != -1) {
-                    scaleLevel = pKF->mvKeys[leftIndex].octave;
-                }
-                if (rightIndex != -1) {
-                    int rightLevel = pKF->mvKeysRight[rightIndex - pKF->NLeft].octave;
-                    scaleLevel = (scaleLevel == -1 || scaleLevel > rightLevel) ? rightLevel : scaleLevel;
-                }
-            }
-            if (scaleLevel != -1)
-                scaleObservationsCount[scaleLevel]--;
+            UpdateScaleObservationsCount(ObservationScaleLevel(pKF, indexes), -1);
 
             if(mpRefKF==pKF)
                 mpRefKF=mObservations.begin()->first;
@@ -260,6 +262,25 @@ std::vector<int> MapPoint::GetScaleObservationsCount()
     return scaleObservationsCount;
 }
 
+int MapPoint::CountScaleObservations(KeyFrame* pKFExclude, int maxLevel, int stopAbove)
+{
+    unique_lock<mutex> lock(mMutexFeatures);
+
+    // Membership and the histogram must come from one snapshot: another thread adding
+    // or erasing an observation between two separate reads would leave the self-vote
+    // discount disagreeing with the counts and flip the redundancy verdict.
+    int n = mObservations.count(pKFExclude) ? -1 : 0;
+
+    const int last = std::min(maxLevel, (int)scaleObservationsCount.size()-1);
+    for(int j = 0; j <= last; j++)
+    {
+        n += scaleObservationsCount[j];
+        if(n > stopAbove)
+            break;
+    }
+    return n;
+}
+
 void MapPoint::SetBadFlag()
 {
     map<KeyFrame*, tuple<int,int>> obs;
@@ -269,6 +290,7 @@ void MapPoint::SetBadFlag()
         mbBad=true;
         obs = mObservations;
         mObservations.clear();
+        std::fill(scaleObservationsCount.begin(), scaleObservationsCount.end(), 0);
     }
     for(map<KeyFrame*, tuple<int,int>>::iterator mit=obs.begin(), mend=obs.end(); mit!=mend; mit++)
     {
@@ -304,6 +326,7 @@ void MapPoint::Replace(MapPoint* pMP)
         unique_lock<mutex> lock2(mMutexPos);
         obs=mObservations;
         mObservations.clear();
+        std::fill(scaleObservationsCount.begin(), scaleObservationsCount.end(), 0);
         mbBad=true;
         nvisible = mnVisible;
         nfound = mnFound;
@@ -674,6 +697,7 @@ void MapPoint::PostLoad(map<long unsigned int, KeyFrame*>& mpKFid, map<long unsi
     }
 
     mObservations.clear();
+    std::fill(scaleObservationsCount.begin(), scaleObservationsCount.end(), 0);
 
     for(map<long unsigned int, int>::const_iterator it = mBackupObservationsId1.begin(), end = mBackupObservationsId1.end(); it != end; ++it)
     {
@@ -683,6 +707,7 @@ void MapPoint::PostLoad(map<long unsigned int, KeyFrame*>& mpKFid, map<long unsi
         if(pKFi)
         {
            mObservations[pKFi] = indexes;
+           UpdateScaleObservationsCount(ObservationScaleLevel(pKFi, indexes), 1);
         }
     }
 

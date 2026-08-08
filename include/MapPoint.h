@@ -123,9 +123,18 @@ public:
     std::map<KeyFrame*,std::tuple<int,int>> GetObservations();
     int Observations();
     std::vector<int> GetScaleObservationsCount();
+    // Keyframes observing this point at octave <= maxLevel, excluding pKFExclude.
+    // Stops counting once the total exceeds stopAbove. Single-snapshot equivalent of
+    // walking GetObservations() and testing each scaleLeveli against maxLevel.
+    int CountScaleObservations(KeyFrame* pKFExclude, int maxLevel, int stopAbove);
 
     void AddObservation(KeyFrame* pKF,int idx);
     void EraseObservation(KeyFrame* pKF);
+
+    // Octave this keyframe observes the point at, given its stored index pair. For a
+    // keyframe seeing the point in both fisheye images this is the finer of the two,
+    // matching the rule KeyFrameCulling uses. Returns -1 if no index is valid.
+    static int ObservationScaleLevel(KeyFrame* pKF, const std::tuple<int,int> &indexes);
 
     std::tuple<int,int> GetIndexInKeyFrame(KeyFrame* pKF);
     bool IsInKeyFrame(KeyFrame* pKF);
@@ -218,8 +227,13 @@ protected:
 
      // Keyframes observing the point and associated index in keyframe
      std::map<KeyFrame*,std::tuple<int,int> > mObservations;
-     // The count of keyframes observing a mappoint in each scale, used in KFCulling
+     // The count of keyframes observing a mappoint in each scale, used in KFCulling.
+     // Bucket index is ObservationScaleLevel(); every mObservations entry contributes
+     // exactly one count. Guarded by mMutexFeatures.
      std::vector<int> scaleObservationsCount;
+     // Applies delta to scaleObservationsCount[scaleLevel]. No-op for scaleLevel < 0,
+     // grows the histogram if the pyramid has more levels than it was sized for.
+     void UpdateScaleObservationsCount(int scaleLevel, int delta);
      // For save relation without pointer, this is necessary for save/load function
      std::map<long unsigned int, int> mBackupObservationsId1;
      std::map<long unsigned int, int> mBackupObservationsId2;

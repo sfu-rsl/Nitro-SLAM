@@ -1687,6 +1687,9 @@ void LocalMapping::KeyFrameCullingOptimized()
             MapPoint* pMP = vpMapPoints[i];
             if (pMP) {
                 if (!pMP->isBad()) {
+                    // Point selection and scale below are deliberately identical to
+                    // KeyFrameCulling(); the cached histogram is the only difference, so
+                    // that this stays a speedup rather than a change in behaviour.
                     if (!mbMonocular) {
                         if (pKF->mvDepth[i] > pKF->mThDepth || pKF->mvDepth[i] < 0)
                             continue;
@@ -1696,16 +1699,14 @@ void LocalMapping::KeyFrameCullingOptimized()
                     if (pMP->Observations() > thObs) {
                         const int &scaleLevel = (pKF->NLeft == -1) ? pKF->mvKeysUn[i].octave
                                                                    : (i < pKF->NLeft) ? pKF->mvKeys[i].octave
-                                                                                      : pKF->mvKeysRight[i - pKF->NLeft].octave;
+                                                                                      : pKF->mvKeysRight[i].octave;
 
-                        vector<int> scaleObsCount = pMP->GetScaleObservationsCount();
-                        int nObs = -1;
-                        for (int j = 0; j < scaleObsCount.size(); j++) {
-                            if (j <= scaleLevel+1) 
-                                nObs += scaleObsCount[j];
-                            if (nObs > thObs)
-                                break;
-                        }
+                        // Replaces KeyFrameCulling()'s walk over pMP->GetObservations().
+                        // The histogram buckets each observing keyframe by the same rule
+                        // that walk uses for scaleLeveli (the finer of its two fisheye
+                        // octaves, see MapPoint::ObservationScaleLevel), so counting
+                        // buckets <= scaleLevel+1 covers exactly the same keyframes.
+                        const int nObs = pMP->CountScaleObservations(pKF, scaleLevel+1, thObs);
                         if (nObs > thObs) {
                             nRedundantObservations++;
                         }

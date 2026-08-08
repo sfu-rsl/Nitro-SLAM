@@ -1634,9 +1634,11 @@ void LoopClosing::CorrectLoop()
         std::chrono::steady_clock::time_point time_StartGraphOptimization = std::chrono::steady_clock::now();
 #endif
         if(LoopClosingKernelController::graphOptimizationOnGPU){
+            std::cout << "PGO GPU!" << std::endl;
             OptimizerGPU::OptimizeEssentialGraph4DoF(pLoopMap, mpLoopMatchedKF, mpCurrentKF, NonCorrectedSim3, CorrectedSim3, LoopConnections);
         }
         else{
+            std::cout << "PGO CPU!" << std::endl;
             Optimizer::OptimizeEssentialGraph4DoF(pLoopMap, mpLoopMatchedKF, mpCurrentKF, NonCorrectedSim3, CorrectedSim3, LoopConnections);
         }
 
