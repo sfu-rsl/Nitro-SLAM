@@ -2,11 +2,32 @@
 #include "Kernels/SearchByProjectionKernel.h"
 #include <omp.h>
 
+// The map-point buffers below are preallocated once at this capacity, but every
+// launch path fills them with vpPoints.size() entries and never checks. Instrumented
+// to find out whether the caller actually exceeds it - if it does, the writes run off
+// the end of pinned host memory and the match counts come back corrupted.
+// All launch paths run on the loop closing thread, so these counters need no locking.
+static const size_t kMapPointCapacity = 4100;
+static size_t g_maxMapPointVecSize = 0;
+static unsigned long g_mapPointOverflowCount = 0;
+
+static void checkMapPointCapacity(const char* where, size_t n)
+{
+    if (n > g_maxMapPointVecSize)
+        g_maxMapPointVecSize = n;
+    if (n > kMapPointCapacity) {
+        g_mapPointOverflowCount++;
+        std::cout << "[SearchByProjectionKernel:] CAPACITY EXCEEDED in " << where
+                  << ": vpPoints.size()=" << n << " > capacity " << kMapPointCapacity
+                  << " (overflow #" << g_mapPointOverflowCount << ")" << std::endl;
+    }
+}
+
 void SearchByProjectionKernel::initialize(){
     if (memory_is_initialized)
         return;
-    
-    size_t mapPointVecSize = 4100;
+
+    size_t mapPointVecSize = kMapPointCapacity;
     cudaMallocHost((void**)&h_MapPoints, mapPointVecSize * sizeof(MAPPING_DATA_WRAPPER::CudaMapPoint));
     cudaMallocHost((void**)&bestDists, 3 * mapPointVecSize * sizeof(int));
     cudaMallocHost((void**)&bestIdxs, 3 * mapPointVecSize * sizeof(int));
@@ -26,8 +47,12 @@ void SearchByProjectionKernel::initialize(){
 }
 
 void SearchByProjectionKernel::shutdown() {
-    if (!memory_is_initialized) 
+    if (!memory_is_initialized)
         return;
+
+    std::cout << "[SearchByProjectionKernel:] map-point high-water mark: "
+              << g_maxMapPointVecSize << " / capacity " << kMapPointCapacity
+              << "  (overflows: " << g_mapPointOverflowCount << ")" << std::endl;
 
     cudaFreeHost(h_MapPoints);
     cudaFreeHost(bestDists);
@@ -641,6 +666,7 @@ int SearchByProjectionKernel::launch(ORB_SLAM3::KeyFrame* pKF, Sophus::Sim3<floa
     int nmatches=0;
 
     size_t mapPointVecSize = vpPoints.size();
+    checkMapPointCapacity("launch(vpPointsKFs)", mapPointVecSize);
 
     Sophus::SE3f Tcw = Sophus::SE3f(Scw.rotationMatrix(),Scw.translation()/Scw.scale());
     Eigen::Vector3f Ow = Tcw.inverse().translation();
@@ -755,6 +781,7 @@ int SearchByProjectionKernel::launch(ORB_SLAM3::KeyFrame* pKF, Sophus::Sim3<floa
     int nmatches=0;
 
     size_t mapPointVecSize = vpPoints.size();
+    checkMapPointCapacity("launch(single)", mapPointVecSize);
 
 
     Sophus::SE3f Tcw = Sophus::SE3f(Scw.rotationMatrix(),Scw.translation()/Scw.scale());
@@ -875,6 +902,7 @@ void SearchByProjectionKernel::mergedlaunch(ORB_SLAM3::KeyFrame* pKF, const std:
     numProjMatches = 0;
 
     size_t mapPointVecSize = vpPoints.size();
+    checkMapPointCapacity("mergedlaunch(pKF)", mapPointVecSize);
     
     Sophus::SE3f Tcw1 = Sophus::SE3f(Scw1.rotationMatrix(),Scw1.translation()/Scw1.scale());
     Eigen::Vector3f Ow1 = Tcw1.inverse().translation();
@@ -1005,6 +1033,7 @@ void SearchByProjectionKernel::mergedlaunch(vector<ORB_SLAM3::KeyFrame*> current
     const int TH_LOW = 50;
 
     size_t mapPointVecSize = vpPoints.size();
+    checkMapPointCapacity("mergedlaunch(covKFs)", mapPointVecSize);
 
     for (size_t i = 0; i<covKFsSize; i++) {
         h_Tcw[i] = Sophus::SE3f(currentCovmScws[i].rotationMatrix(),currentCovmScws[i].translation()/currentCovmScws[i].scale());

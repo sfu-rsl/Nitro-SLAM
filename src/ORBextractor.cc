@@ -163,13 +163,24 @@ namespace ORB_SLAM3
     }
 
     void generateGaussian(float K[]) {
-        const double stdev = SIGMA;
-        const double pi = CV_PI;
-        const double constant = 1.0 / (2.0 * pi * stdev);
+        // Must match the CPU path's GaussianBlur(Size(KW,KH), SIGMA, SIGMA) - the
+        // descriptors are quantised against a vocabulary trained on that blur, so an
+        // effective sigma that differs here shifts every descriptor's bit statistics.
+        // Both the exponent and the normaliser take sigma^2, not sigma.
+        const double variance = (double)SIGMA * (double)SIGMA;
 
-        for (int h = -KH/2; h<=KH/2; h++)
-            for (int w = -KW/2; w<=KW/2; w++)
-                K[(h + KH/2) * KW + (w + KW/2)] = constant * (1 / exp((pow(h, 2) + pow(w, 2)) / (2 * stdev)));
+        double sum = 0.0;
+        for (int h = -KH/2; h<=KH/2; h++) {
+            for (int w = -KW/2; w<=KW/2; w++) {
+                const double v = exp(-((double)(h*h + w*w)) / (2.0 * variance));
+                K[(h + KH/2) * KW + (w + KW/2)] = (float)v;
+                sum += v;
+            }
+        }
+
+        // Normalise so the blur preserves intensity, as cv::GaussianBlur does.
+        for (int i = 0; i < KW*KH; i++)
+            K[i] = (float)(K[i] / sum);
     }
 
 
@@ -1306,11 +1317,18 @@ namespace ORB_SLAM3
             uint size = corner_size[level];
             ORB_SLAM3::GpuPoint *corner_buffer = &(this->corner_buffer[level*rows*cols]);
 
+            // The GPU emits absolute coordinates (fast.cu adds minBorderX+3), but
+            // DistributeOctTree bins keypoints against a tree rooted at 0, so the CPU
+            // path feeds it ROI-relative coordinates and adds the border back
+            // afterwards. Shift into the same frame here, otherwise every cell boundary
+            // lands at a different place in the image and a different subset of
+            // keypoints survives. The border is restored after distribution - the
+            // descriptors were computed against the absolute coordinates.
             for(uint i=0; i<size; i++)
             {
                 // cout << size << " " << i << endl;
-                const float x = corner_buffer[i].x;
-                const float y = corner_buffer[i].y;
+                const float x = corner_buffer[i].x - minBorderX;
+                const float y = corner_buffer[i].y - minBorderY;
                 const float score = corner_buffer[i].score;
                 const float size = corner_buffer[i].size;
                 const float angle = corner_buffer[i].angle;
@@ -1324,9 +1342,15 @@ namespace ORB_SLAM3
             vector<OrbKeyPoint> & keypoints = allKeypoints[level];
             keypoints.reserve(nfeatures);
 
-            keypoints = DistributeOctTreeGPU(vToDistributeKeys, minBorderX, maxBorderX+minBorderX,
-                                             minBorderY, maxBorderY+minBorderY,mnFeaturesPerLevel[level], level);
-            
+            keypoints = DistributeOctTreeGPU(vToDistributeKeys, minBorderX, maxBorderX,
+                                             minBorderY, maxBorderY,mnFeaturesPerLevel[level], level);
+
+            // Restore absolute coordinates, as the CPU path does after distributing.
+            for(size_t i=0; i<keypoints.size(); i++)
+            {
+                keypoints[i].point.pt.x += minBorderX;
+                keypoints[i].point.pt.y += minBorderY;
+            }
         }
     }
 

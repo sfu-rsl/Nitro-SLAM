@@ -46,8 +46,16 @@ __global__ void gaussian_blur_kernel(uint old_h, uint old_w, float *_scaleFactor
     float acc = 0;
     for (int w = -KW/2; w<=KW/2; w++)
         for (int h = -KH/2; h<=KH/2; h++) {
-            const int index = min(max(image_index+(h*imageStep)+w, 0), new_cols*new_rows);
-            acc += image[index] * kernel[(h + KH/2) * KW + (w + KW/2)];
+            // BORDER_REFLECT_101, matching the CPU path's cv::GaussianBlur. Clamping a
+            // linear index instead both failed to reflect and let horizontal offsets
+            // wrap into the neighbouring row.
+            int sx = x + w;
+            int sy = y + h;
+            if (sx < 0) sx = -sx;
+            if (sx >= (int)new_cols) sx = 2*((int)new_cols - 1) - sx;
+            if (sy < 0) sy = -sy;
+            if (sy >= (int)new_rows) sy = 2*((int)new_rows - 1) - sy;
+            acc += image[sx + sy*imageStep] * kernel[(h + KH/2) * KW + (w + KW/2)];
         }
     
     imageBlured[image_index] = round(acc);
