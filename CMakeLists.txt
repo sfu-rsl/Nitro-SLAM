@@ -126,6 +126,8 @@ src/Kernels/StereoMatchKernel.cu
 src/Kernels/SearchLocalPointsKernel.cu
 src/Kernels/PoseEstimationKernel.cu
 src/Kernels/SearchForTriangulationKernel.cu
+src/Kernels/TriangulationMatchKernel.cu
+src/Kernels/MapPointCandidateKernel.cu
 src/Kernels/TrackingKernelController.cu
 src/Kernels/MappingKernelController.cu
 src/Kernels/CudaKeyFrameStorage.cu

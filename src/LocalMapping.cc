@@ -20,6 +20,8 @@
 #include "LocalMapping.h"
 #include "LoopClosing.h"
 #include "ORBmatcher.h"
+#include <map>
+#include <cstdlib>
 #include "Optimizer.h"
 #include "Converter.h"
 #include "GeometricTools.h"
@@ -33,6 +35,17 @@
 
 namespace ORB_SLAM3
 {
+
+// Total correspondences returned by the triangulation search, CPU vs GPU path.
+// Both run on the local mapping thread, so no locking needed.
+static unsigned long g_triMatchesCPU = 0, g_triCallsCPU = 0;
+static unsigned long g_triMatchesGPU = 0, g_triCallsGPU = 0;
+
+// Set NITRO_VALIDATE_TRI=1 to run ORBmatcher::SearchForTriangulation alongside the
+// batched GPU search on identical state and diff the two match sets. Doubles the search
+// cost, so it is off unless requested.
+static unsigned long g_vPairs = 0, g_vAgree = 0, g_vDisagree = 0, g_vCpuOnly = 0, g_vGpuOnly = 0;
+
 
 void LocalMapping::signalHandler(int signum) {
     std::cout << "[LocalMapping::] Interrupt signal (" << signum << ") received.\n";
@@ -144,8 +157,12 @@ void LocalMapping::Run()
 #endif  
 
             // Triangulate new MapPoints
-            if (MappingKernelController::searchForTriangulationOnGPU)
-                CreateNewMapPointsGPU();
+            if (MappingKernelController::searchForTriangulationOnGPU) {
+                if (MappingKernelController::useGPU2Pipeline)
+                    CreateNewMapPointsGPU2();
+                else
+                    CreateNewMapPointsGPU();
+            }
             else
                 CreateNewMapPoints();
 
@@ -394,6 +411,23 @@ void LocalMapping::Run()
         usleep(3000);
     }
 
+    if (g_vPairs) {
+        const double tot = (double)(g_vAgree + g_vDisagree + g_vCpuOnly + g_vGpuOnly);
+        std::cout << "[Tri search equivalence] pairs=" << g_vPairs
+                  << "  agree=" << g_vAgree
+                  << "  sameIdx1_diffIdx2=" << g_vDisagree
+                  << "  cpuOnly=" << g_vCpuOnly
+                  << "  gpuOnly=" << g_vGpuOnly
+                  << "  agreeFrac=" << (tot ? g_vAgree/tot : 0.0) << std::endl;
+    }
+
+    std::cout << "[Triangulation search] CPU calls=" << g_triCallsCPU
+              << " matches=" << g_triMatchesCPU
+              << " avg=" << (g_triCallsCPU ? (double)g_triMatchesCPU/g_triCallsCPU : 0.0)
+              << " | GPU calls=" << g_triCallsGPU
+              << " matches=" << g_triMatchesGPU
+              << " avg=" << (g_triCallsGPU ? (double)g_triMatchesGPU/g_triCallsGPU : 0.0) << std::endl;
+
     SetFinish();
     cleanup_liba();
 }
@@ -587,6 +621,7 @@ void LocalMapping::CreateNewMapPoints()
 #endif
 
         matcher.SearchForTriangulation(mpCurrentKeyFrame,pKF2,vMatchedIndices,false,bCoarse);
+        g_triCallsCPU++; g_triMatchesCPU += vMatchedIndices.size();
 
 #ifdef REGISTER_LOCAL_MAPPING_STATS
         std::chrono::steady_clock::time_point time_end = std::chrono::steady_clock::now();
@@ -844,6 +879,102 @@ void LocalMapping::CreateNewMapPoints()
 #endif
 }
 
+void LocalMapping::CreateNewMapPointsGPU2()
+{
+    // Neighbour selection is identical to CreateNewMapPoints.
+    int nn = 10;
+    if(mbMonocular)
+        nn=30;
+    vector<KeyFrame*> vpNeighKFs = mpCurrentKeyFrame->GetBestCovisibilityKeyFrames(nn);
+
+    if (mbInertial)
+    {
+        KeyFrame* pKF = mpCurrentKeyFrame;
+        int count=0;
+        while((vpNeighKFs.size()<=nn)&&(pKF->mPrevKF)&&(count++<nn))
+        {
+            vector<KeyFrame*>::iterator it = std::find(vpNeighKFs.begin(), vpNeighKFs.end(), pKF->mPrevKF);
+            if(it==vpNeighKFs.end())
+                vpNeighKFs.push_back(pKF->mPrevKF);
+            pKF = pKF->mPrevKF;
+        }
+    }
+
+    if (CheckNewKeyFrames())
+        return;
+
+    const float ratioFactor = 1.5f*mpCurrentKeyFrame->mfScaleFactor;
+    const bool bCoarse = mbInertial
+                      && mpTracker->mState == Tracking::RECENTLY_LOST
+                      && mpCurrentKeyFrame->GetMap()->GetIniertialBA2();
+
+    // Stage 1 - batched correspondence search. Also applies the baseline / median-depth
+    // neighbour filter and returns the survivors in covisibility order.
+    vector<vector<pair<size_t,size_t>>> allvMatchedIndices;
+    vector<size_t> vpNeighKFsIndexes;
+    MappingKernelController::launchTriangulationMatchKernel(
+        mpCurrentKeyFrame, vpNeighKFs, mbMonocular, bCoarse,
+        allvMatchedIndices, vpNeighKFsIndexes);
+
+    if (vpNeighKFsIndexes.empty())
+        return;
+
+    vector<KeyFrame*> kept;
+    kept.reserve(vpNeighKFsIndexes.size());
+    for (size_t i = 0; i < vpNeighKFsIndexes.size(); i++)
+        kept.push_back(vpNeighKFs[vpNeighKFsIndexes[i]]);
+
+    // Stage 2 - batched geometry. Every candidate's parallax, triangulation, cheirality,
+    // both reprojection tests and scale consistency are evaluated in parallel; survivors
+    // come back in (neighbour, idx1) order.
+    vector<MapPointCandidateKernel::Candidate> candidates;
+    MappingKernelController::launchMapPointCandidateKernel(
+        mpCurrentKeyFrame, kept, allvMatchedIndices,
+        mbInertial, mbFarPoints, mThFarPoints, ratioFactor, candidates);
+
+    // Stage 3 - serial by necessity: allocate MapPoints and wire the observation graph.
+    // Walking in covisibility order and skipping keypoints that already carry a MapPoint
+    // reproduces the CPU rule that the first matching neighbour claims a keypoint.
+    int num_created_mappoints = 0;
+    int lastSlot = -1;
+    for (size_t c = 0; c < candidates.size(); c++)
+    {
+        const MapPointCandidateKernel::Candidate &cd = candidates[c];
+
+        // Mirror the CPU's early abort between neighbours when work is queued.
+        if (cd.neighbourSlot != lastSlot) {
+            if (lastSlot >= 0 && CheckNewKeyFrames())
+                return;
+            lastSlot = cd.neighbourSlot;
+        }
+
+        if (mpCurrentKeyFrame->GetMapPoint(cd.idx1))
+            continue;
+
+        KeyFrame* pKF2 = kept[cd.neighbourSlot];
+        Eigen::Vector3f x3D(cd.x, cd.y, cd.z);
+
+        MapPoint* pMP = new MapPoint(x3D, mpCurrentKeyFrame, mpAtlas->GetCurrentMap());
+        num_created_mappoints += 1;
+
+        pMP->AddObservation(mpCurrentKeyFrame, cd.idx1);
+        pMP->AddObservation(pKF2, cd.idx2);
+
+        mpCurrentKeyFrame->AddMapPoint(pMP, cd.idx1);
+        pKF2->AddMapPoint(pMP, cd.idx2);
+
+        pMP->ComputeDistinctiveDescriptors();
+        pMP->UpdateNormalAndDepth();
+
+        mpAtlas->AddMapPoint(pMP);
+        mlpRecentAddedMapPoints.push_back(pMP);
+    }
+
+#ifdef REGISTER_LOCAL_MAPPING_STATS
+    LocalMappingStats::getInstance().createdMappoints_num.push_back(num_created_mappoints);
+#endif
+}
+
 void LocalMapping::CreateNewMapPointsGPU()
 {
     // Retrieve neighbor keyframes in covisibility graph
@@ -900,16 +1031,62 @@ void LocalMapping::CreateNewMapPointsGPU()
 
     if (CheckNewKeyFrames())
         return;
-    MappingKernelController::launchSearchForTriangulationKernel(
-        mpCurrentKeyFrame, vpNeighKFs, mbMonocular, mbInertial, Tracking::RECENTLY_LOST, mpCurrentKeyFrame->GetMap()->GetIniertialBA2(), 
-        allvMatchedIndices, vpNeighKFsIndexes
-    );
+    // bCoarse must reflect the tracker's current state. The original call passed the
+    // enum constant Tracking::RECENTLY_LOST into a bool parameter, which made it
+    // permanently true and short-circuited the epipolar check after IMU init.
+    const bool bCoarse = mbInertial
+                      && mpTracker->mState == Tracking::RECENTLY_LOST
+                      && mpCurrentKeyFrame->GetMap()->GetIniertialBA2();
+
+    if (MappingKernelController::useNewTriangulation) {
+        MappingKernelController::launchTriangulationMatchKernel(
+            mpCurrentKeyFrame, vpNeighKFs, mbMonocular, bCoarse,
+            allvMatchedIndices, vpNeighKFsIndexes
+        );
+    } else {
+        MappingKernelController::launchSearchForTriangulationKernel(
+            mpCurrentKeyFrame, vpNeighKFs, mbMonocular, mbInertial,
+            mpTracker->mState == Tracking::RECENTLY_LOST,
+            mpCurrentKeyFrame->GetMap()->GetIniertialBA2(),
+            allvMatchedIndices, vpNeighKFsIndexes
+        );
+    }
+    for(size_t q=0; q<allvMatchedIndices.size(); q++) { g_triCallsGPU++; g_triMatchesGPU += allvMatchedIndices[q].size(); }
 
 #ifdef REGISTER_LOCAL_MAPPING_STATS
     std::chrono::steady_clock::time_point time_EndTriangulation = std::chrono::steady_clock::now();
     double timeTriangulation = std::chrono::duration_cast<std::chrono::duration<double,std::milli> >(time_EndTriangulation - time_StartTriangulation).count();
     LocalMappingStats::getInstance().searchForTriangulation_time.push_back(timeTriangulation);
 #endif
+
+    // Equivalence check against the CPU matcher. Runs before the triangulation loop so
+    // both searches observe the same pre-batch map state, which is the only fair
+    // comparison: the batched search cannot see MapPoints created during this call.
+    static const bool bValidate = (getenv("NITRO_VALIDATE_TRI") != nullptr);
+    if (bValidate) {
+        ORBmatcher refMatcher(0.6f, false);
+        for(size_t i=0; i<vpNeighKFsIndexes.size(); i++) {
+            KeyFrame* pKF2ref = vpNeighKFs[vpNeighKFsIndexes[i]];
+            vector<pair<size_t,size_t>> vRef;
+            refMatcher.SearchForTriangulation(mpCurrentKeyFrame, pKF2ref, vRef, false, bCoarse);
+
+            std::map<size_t,size_t> gpuMap, cpuMap;
+            for (size_t q=0; q<allvMatchedIndices[i].size(); q++)
+                gpuMap[allvMatchedIndices[i][q].first] = allvMatchedIndices[i][q].second;
+            for (size_t q=0; q<vRef.size(); q++)
+                cpuMap[vRef[q].first] = vRef[q].second;
+
+            for (std::map<size_t,size_t>::iterator it=cpuMap.begin(); it!=cpuMap.end(); ++it) {
+                std::map<size_t,size_t>::iterator g = gpuMap.find(it->first);
+                if (g == gpuMap.end())            g_vCpuOnly++;
+                else if (g->second == it->second) g_vAgree++;
+                else                              g_vDisagree++;
+            }
+            for (std::map<size_t,size_t>::iterator it=gpuMap.begin(); it!=gpuMap.end(); ++it)
+                if (!cpuMap.count(it->first))     g_vGpuOnly++;
+            g_vPairs++;
+        }
+    }
 
     // Search matches with epipolar restriction and triangulate
     for(size_t i=0; i<vpNeighKFsIndexes.size(); i++)
@@ -942,17 +1119,20 @@ void LocalMapping::CreateNewMapPointsGPU()
 
         // Triangulate each match
         const int nmatches = allvMatchedIndices[i].size();
-        unordered_set<size_t> currentKeyframeMatchedKeypoints;
 
         for(int ikp=0; ikp<nmatches; ikp++)
         {
             const int &idx1 = allvMatchedIndices[i][ikp].first;
             const int &idx2 = allvMatchedIndices[i][ikp].second;
 
-            if (currentKeyframeMatchedKeypoints.find(idx1) != currentKeyframeMatchedKeypoints.end())
+            // SearchForTriangulation skips keypoints that already carry a MapPoint, and
+            // on the CPU path that check is stateful across neighbours: neighbour i
+            // creates the point, so neighbour i+1's search skips the keypoint. Batching
+            // every search up front means they all see the same pre-batch state, so the
+            // same idx1 comes back from several neighbours and each one triangulates a
+            // duplicate. Re-apply the rule here, against live state.
+            if (mpCurrentKeyFrame->GetMapPoint(idx1))
                 continue;
-
-            currentKeyframeMatchedKeypoints.insert(idx1);
 
             const cv::KeyPoint &kp1 = (mpCurrentKeyFrame -> NLeft == -1) ? mpCurrentKeyFrame->mvKeysUn[idx1]
                                                                          : (idx1 < mpCurrentKeyFrame -> NLeft) ? mpCurrentKeyFrame -> mvKeys[idx1]

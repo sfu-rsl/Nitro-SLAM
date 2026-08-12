@@ -10,6 +10,14 @@
 #include <math.h>
 #include <csignal>
 
+// Diagnostics for the MAX_FEAT_VEC_SIZE cap on common BoW nodes per keyframe pair.
+// CPU walks the whole FeatureVector intersection; anything past the cap is dropped.
+// Local-mapping thread only, so no locking needed.
+static unsigned long g_sftPairs = 0;
+static unsigned long g_sftTruncatedPairs = 0;
+static unsigned long g_sftDroppedNodes = 0;
+static int           g_sftMaxCommonNodes = 0;
+
 // It is advisable to define the default dense index type as int for CUDA device code.
 #define EIGEN_DEFAULT_DENSE_INDEX_TYPE int
 
@@ -589,16 +597,25 @@ void SearchForTriangulationKernel::launch(ORB_SLAM3::KeyFrame* mpCurrentKeyFrame
         size_t f1Idx = 0, f2Idx = 0;
         int counter = 0;
 
+        int commonNodes = 0;   // uncapped, diagnostics only
+
         while (f1it != f1end && f2it != f2end) {
             if (f1it->first == f2it->first) {
-                currFrameFeatVecIdxCorrespondences[i*featVecSize + counter] = f1Idx;
-                neighFramesFeatVecIdxCorrespondences[i*featVecSize + counter] = f2Idx;
+                // counter used to be unbounded: a pair with more than featVecSize common
+                // BoW nodes wrote into the next neighbour's slice, and past the end of
+                // the array for the last neighbour. CPU walks the whole intersection, so
+                // anything beyond the cap is also a silently dropped correspondence.
+                if (counter < (int)featVecSize) {
+                    currFrameFeatVecIdxCorrespondences[i*featVecSize + counter] = f1Idx;
+                    neighFramesFeatVecIdxCorrespondences[i*featVecSize + counter] = f2Idx;
+                    counter++;
+                }
+                commonNodes++;
 
                 f1it++;
                 f2it++;
                 f1Idx++;
                 f2Idx++;
-                counter++;
             }
             else if (f1it->first < f2it->first) {
                 f1it = vFeatVec1.lower_bound(f2it->first);
@@ -610,6 +627,13 @@ void SearchForTriangulationKernel::launch(ORB_SLAM3::KeyFrame* mpCurrentKeyFrame
             }
         }
 
+        g_sftPairs++;
+        if (commonNodes > g_sftMaxCommonNodes)
+            g_sftMaxCommonNodes = commonNodes;
+        if (commonNodes > (int)featVecSize) {
+            g_sftTruncatedPairs++;
+            g_sftDroppedNodes += (commonNodes - (int)featVecSize);
+        }
     }
 
     int maxFeatures = CudaUtils::nFeatures_with_th;
@@ -1057,6 +1081,12 @@ void SearchForTriangulationKernel::initialize() {
 }
 
 void SearchForTriangulationKernel::shutdown() {
+    std::cout << "[SearchForTriangulationKernel:] KF pairs=" << g_sftPairs
+              << "  truncated=" << g_sftTruncatedPairs
+              << "  maxCommonNodes=" << g_sftMaxCommonNodes
+              << " / cap " << MAX_FEAT_VEC_SIZE
+              << "  droppedNodes=" << g_sftDroppedNodes << std::endl;
+
     if (memory_is_initialized) {
         cudaFree(d_neighKeyframes);
         cudaFree(d_currFrameFeatVecIdxCorrespondences);

@@ -18,6 +18,10 @@ bool MappingKernelController::isShuttingDown = false;
 bool MappingKernelController::localMappingFinished = false;
 bool MappingKernelController::loopClosingFinished = false;
 std::unique_ptr<SearchForTriangulationKernel> MappingKernelController::mpSearchForTriangulationKernel = std::make_unique<SearchForTriangulationKernel>();
+std::unique_ptr<TriangulationMatchKernel> MappingKernelController::mpTriangulationMatchKernel = std::make_unique<TriangulationMatchKernel>();
+bool MappingKernelController::useNewTriangulation = false;
+bool MappingKernelController::useGPU2Pipeline = false;
+std::unique_ptr<MapPointCandidateKernel> MappingKernelController::mpMapPointCandidateKernel = std::make_unique<MapPointCandidateKernel>();
 std::unique_ptr<FuseKernel> MappingKernelController::mpFuseKernel = std::make_unique<FuseKernel>();
 MAPPING_DATA_WRAPPER::CudaKeyFrame* MappingKernelController::cudaKeyFramePtr;
 std::mutex MappingKernelController::shutDownMutex;
@@ -48,8 +52,14 @@ void MappingKernelController::initializeKernels(){
 
     cudaKeyFramePtr = new MAPPING_DATA_WRAPPER::CudaKeyFrame();
 
-    if (searchForTriangulationOnGPU)
-        mpSearchForTriangulationKernel->initialize();
+    if (searchForTriangulationOnGPU) {
+        if (useNewTriangulation || useGPU2Pipeline)
+            mpTriangulationMatchKernel->initialize();
+        else
+            mpSearchForTriangulationKernel->initialize();
+        if (useGPU2Pipeline)
+            mpMapPointCandidateKernel->initialize();
+    }
     
     if (fuseOnGPU)
         mpFuseKernel->initialize();
@@ -80,8 +90,14 @@ void MappingKernelController::shutdownKernels(bool _localMappingFinished, bool _
         CudaKeyFrameStorage::shutdown();
         cudaKeyFramePtr->freeMemory();
         delete cudaKeyFramePtr;
-        if (searchForTriangulationOnGPU == 1)
-            mpSearchForTriangulationKernel->shutdown();
+        if (searchForTriangulationOnGPU == 1) {
+            if (useNewTriangulation || useGPU2Pipeline)
+                mpTriangulationMatchKernel->shutdown();
+            else
+                mpSearchForTriangulationKernel->shutdown();
+            if (useGPU2Pipeline)
+                mpMapPointCandidateKernel->shutdown();
+        }
         if (fuseOnGPU == 1)
             mpFuseKernel->shutdown();
         //if (LBAOnGPU == 1)
@@ -97,6 +113,25 @@ void MappingKernelController::saveKernelsStats(const std::string &file_path){
     
     mpSearchForTriangulationKernel->saveStats(file_path);
     mpFuseKernel->saveStats(file_path);
+}
+
+void MappingKernelController::launchMapPointCandidateKernel(
+    ORB_SLAM3::KeyFrame* pKF1, const std::vector<ORB_SLAM3::KeyFrame*> &kept,
+    const std::vector<std::vector<std::pair<size_t,size_t>>> &allvMatchedIndices,
+    bool bInertial, bool bFarPoints, float thFarPoints, float ratioFactor,
+    std::vector<MapPointCandidateKernel::Candidate> &outCandidates)
+{
+    mpMapPointCandidateKernel->launch(pKF1, kept, allvMatchedIndices, bInertial,
+                                      bFarPoints, thFarPoints, ratioFactor, outCandidates);
+}
+
+void MappingKernelController::launchTriangulationMatchKernel(
+    ORB_SLAM3::KeyFrame* mpCurrentKeyFrame, std::vector<ORB_SLAM3::KeyFrame*> vpNeighKFs,
+    bool mbMonocular, bool bCoarse,
+    std::vector<std::vector<std::pair<size_t,size_t>>> &allvMatchedIndices, std::vector<size_t> &vpNeighKFsIndexes)
+{
+    mpTriangulationMatchKernel->launch(mpCurrentKeyFrame, vpNeighKFs, mbMonocular, bCoarse,
+                                       allvMatchedIndices, vpNeighKFsIndexes);
 }
 
 void MappingKernelController::launchSearchForTriangulationKernel(

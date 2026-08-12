@@ -6,6 +6,8 @@
 #include "CudaUtils.h"
 #include "FuseKernel.h"
 #include "SearchForTriangulationKernel.h"
+#include "TriangulationMatchKernel.h"
+#include "MapPointCandidateKernel.h"
 #include "Optimizer.h"
 #include <memory> 
 
@@ -22,6 +24,11 @@ public:
     static bool searchForTriangulationOnGPU;
     static bool fuseOnGPU;
     static bool optimizeKeyframeCulling;
+    // Selects the rewritten batched search (TriangulationMatchKernel) over the
+    // original SearchForTriangulationKernel, which is preserved unchanged.
+    static bool useNewTriangulation;
+    // Selects CreateNewMapPointsGPU2, which also runs the geometry on the GPU.
+    static bool useGPU2Pipeline;
     static bool LBAOnGPU;
 
     static void setGPURunMode(bool searchForTriangulation, bool fuse, bool keyframeCulling, bool LBA);
@@ -32,6 +39,19 @@ public:
     
     static void saveKernelsStats(const std::string &file_path);
 
+
+    static void launchMapPointCandidateKernel(
+        ORB_SLAM3::KeyFrame* pKF1, const std::vector<ORB_SLAM3::KeyFrame*> &kept,
+        const std::vector<std::vector<std::pair<size_t,size_t>>> &allvMatchedIndices,
+        bool bInertial, bool bFarPoints, float thFarPoints, float ratioFactor,
+        std::vector<MapPointCandidateKernel::Candidate> &outCandidates
+    );
+
+    static void launchTriangulationMatchKernel(
+        ORB_SLAM3::KeyFrame* mpCurrentKeyFrame, std::vector<ORB_SLAM3::KeyFrame*> vpNeighKFs,
+        bool mbMonocular, bool bCoarse,
+        std::vector<std::vector<std::pair<size_t,size_t>>> &allvMatchedIndices, std::vector<size_t> &vpNeighKFsIndexes
+    );
 
     static void launchSearchForTriangulationKernel(
         ORB_SLAM3::KeyFrame* mpCurrentKeyFrame, std::vector<ORB_SLAM3::KeyFrame*> vpNeighKFs, 
@@ -54,6 +74,8 @@ private:
     static bool memory_is_initialized, isShuttingDown, localMappingFinished, loopClosingFinished;
     static MAPPING_DATA_WRAPPER::CudaKeyFrame *cudaKeyFramePtr;
     static std::unique_ptr<SearchForTriangulationKernel> mpSearchForTriangulationKernel;
+    static std::unique_ptr<TriangulationMatchKernel> mpTriangulationMatchKernel;
+    static std::unique_ptr<MapPointCandidateKernel> mpMapPointCandidateKernel;
     static std::unique_ptr<FuseKernel> mpFuseKernel;
     static std::mutex shutDownMutex;
 };

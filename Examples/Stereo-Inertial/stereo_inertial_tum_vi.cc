@@ -22,6 +22,7 @@
 #include<chrono>
 #include <ctime>
 #include <sstream>
+#include <cstring>
 
 #include<opencv2/core/core.hpp>
 
@@ -72,6 +73,12 @@ int main(int argc, char **argv)
     bool TM_fuseEnabled = (argv[argc-2][1] == '1');
     bool TM_keyframeCullingEnabled = (argv[argc-2][2] == '1');
     bool TM_LBAEnabled = (argv[argc-2][3] == '1');
+    // Optional 5th bit selects the rewritten triangulation search. Absent (4-char
+    // status) keeps the original SearchForTriangulationKernel, so existing scripts are
+    // unaffected.
+    bool TM_newTriangulation = (strlen(argv[argc-2]) > 4 && argv[argc-2][4] == '1');
+    // 6th bit selects CreateNewMapPointsGPU2 (search + geometry both on GPU).
+    bool TM_gpu2 = (strlen(argv[argc-2]) > 5 && argv[argc-2][5] == '1');
 
     bool FL_mergedSearchByProjectionEnabled = (argv[argc-1][0] == '1');
     bool FL_merged3SearchByProjectionEnabled = (argv[argc-1][1] == '1');
@@ -103,6 +110,12 @@ int main(int argc, char **argv)
     if (run_TurboMap) {
         MappingKernelController::activate();
         MappingKernelController::setGPURunMode(TM_searchForTriangulationEnabled, TM_fuseEnabled, TM_keyframeCullingEnabled, TM_LBAEnabled);
+        MappingKernelController::useNewTriangulation = TM_newTriangulation;
+        MappingKernelController::useGPU2Pipeline = TM_gpu2;
+        if (TM_gpu2)
+            cout << "Using CreateNewMapPointsGPU2 (batched search + batched geometry)" << endl;
+        else if (TM_newTriangulation)
+            cout << "Using rewritten triangulation search (TriangulationMatchKernel)" << endl;
 
         cout << "Activated TurboMap Kernels are: (";
         if (TM_searchForTriangulationEnabled)

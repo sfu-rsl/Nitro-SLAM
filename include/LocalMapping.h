@@ -137,6 +137,9 @@ protected:
     void ProcessNewKeyFrame();
     void CreateNewMapPoints();
     void CreateNewMapPointsGPU();
+    // Full-GPU pipeline: batched search + batched geometry, host only allocates
+    // MapPoints and wires the observation graph.
+    void CreateNewMapPointsGPU2();
 
     void MapPointCulling();
     void SearchInNeighbors();
