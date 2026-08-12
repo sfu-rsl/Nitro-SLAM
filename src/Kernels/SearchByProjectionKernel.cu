@@ -682,10 +682,7 @@ int SearchByProjectionKernel::launch(ORB_SLAM3::KeyFrame* pKF, Sophus::Sim3<floa
         }
     }
 
-    MAPPING_DATA_WRAPPER::CudaKeyFrame* tempKF = CudaKeyFrameStorage::getCudaKeyFrame(pKF->mnId);
-    if (tempKF == nullptr){
-        tempKF = CudaKeyFrameStorage::addCudaKeyFrame(pKF);
-    }
+    MAPPING_DATA_WRAPPER::CudaKeyFrame* tempKF = CudaKeyFrameAllocator::getOrCreate(pKF);
 
     const cudaStream_t stream = cudaStreamPerThread;
     cudaMemcpyAsync(d_KeyFrame, tempKF, sizeof(MAPPING_DATA_WRAPPER::CudaKeyFrame), cudaMemcpyDeviceToDevice, stream);
@@ -798,10 +795,7 @@ int SearchByProjectionKernel::launch(ORB_SLAM3::KeyFrame* pKF, Sophus::Sim3<floa
     }
 
 
-    MAPPING_DATA_WRAPPER::CudaKeyFrame* tempKF = CudaKeyFrameStorage::getCudaKeyFrame(pKF->mnId);
-    if (tempKF == nullptr){
-        tempKF = CudaKeyFrameStorage::addCudaKeyFrame(pKF);
-    }
+    MAPPING_DATA_WRAPPER::CudaKeyFrame* tempKF = CudaKeyFrameAllocator::getOrCreate(pKF);
 
     const cudaStream_t stream = cudaStreamPerThread;
 
@@ -919,10 +913,7 @@ void SearchByProjectionKernel::mergedlaunch(ORB_SLAM3::KeyFrame* pKF, const std:
         }
     }
     
-    MAPPING_DATA_WRAPPER::CudaKeyFrame* d_KeyFrame = CudaKeyFrameStorage::getCudaKeyFrame(pKF->mnId);
-    if (d_KeyFrame == nullptr){
-        d_KeyFrame = CudaKeyFrameStorage::addCudaKeyFrame(pKF);
-    }
+    MAPPING_DATA_WRAPPER::CudaKeyFrame* d_KeyFrame = CudaKeyFrameAllocator::getOrCreate(pKF);
     // cudaMemcpy(d_KeyFrame, tempKF, sizeof(MAPPING_DATA_WRAPPER::CudaKeyFrame), cudaMemcpyDeviceToDevice);
 
     const cudaStream_t stream = cudaStreamPerThread;
@@ -1052,10 +1043,7 @@ void SearchByProjectionKernel::mergedlaunch(vector<ORB_SLAM3::KeyFrame*> current
     
     for (int i=0; i<covKFsSize; i++){
         ORB_SLAM3::KeyFrame* pKF = currentCovKFs[i];
-        h_KeyFrames[i] = CudaKeyFrameStorage::getCudaKeyFrame(pKF->mnId);
-        if (h_KeyFrames[i] == nullptr){
-            h_KeyFrames[i] = CudaKeyFrameStorage::addCudaKeyFrame(pKF);
-        }
+        h_KeyFrames[i] = CudaKeyFrameAllocator::getOrCreate(pKF);
     }
     
     const cudaStream_t stream = cudaStreamPerThread;

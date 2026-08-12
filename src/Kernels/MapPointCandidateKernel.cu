@@ -1,7 +1,7 @@
 #include <iostream>
 
 #include "Kernels/MapPointCandidateKernel.h"
-#include "Kernels/CudaKeyFrameStorage.h"
+#include "Kernels/CudaKeyFrameAllocator.h"
 #include "Kernels/CudaUtils.h"
 #include "CameraModels/GeometricCamera.h"
 #include "sophus/se3.hpp"
@@ -327,7 +327,7 @@ __host__ CamPose makePose(const Sophus::SE3f &Tcw, const Eigen::Vector3f &Ow)
 void MapPointCandidateKernel::initialize()
 {
     if (memory_is_initialized) return;
-    CudaKeyFrameStorage::initializeMemory();
+    CudaKeyFrameAllocator::initialize();
     memory_is_initialized = true;
 }
 
@@ -371,13 +371,11 @@ void MapPointCandidateKernel::launch(
                                          : h_pose2[2*s];
         h_mb2[s] = pKF2->mb;
 
-        MAPPING_DATA_WRAPPER::CudaKeyFrame* k = CudaKeyFrameStorage::getCudaKeyFrame(pKF2->mnId);
-        if (k == nullptr) k = CudaKeyFrameStorage::addCudaKeyFrame(pKF2);
+        MAPPING_DATA_WRAPPER::CudaKeyFrame* k = CudaKeyFrameAllocator::getOrCreate(pKF2);
         h_kf2[s] = k->gpuAddr;
     }
 
-    MAPPING_DATA_WRAPPER::CudaKeyFrame* kf1 = CudaKeyFrameStorage::getCudaKeyFrame(pKF1->mnId);
-    if (kf1 == nullptr) kf1 = CudaKeyFrameStorage::addCudaKeyFrame(pKF1);
+    MAPPING_DATA_WRAPPER::CudaKeyFrame* kf1 = CudaKeyFrameAllocator::getOrCreate(pKF1);
 
     thrust::device_vector<CandIn>   d_in    = h_in;
     thrust::device_vector<CamPose>  d_pose1 = h_pose1;

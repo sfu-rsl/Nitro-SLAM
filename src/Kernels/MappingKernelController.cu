@@ -48,7 +48,7 @@ void MappingKernelController::initializeKernels(){
 
     DEBUG_PRINT("Initializing Kernels");
     
-    CudaKeyFrameStorage::initializeMemory();
+    CudaKeyFrameAllocator::initialize();
 
     cudaKeyFramePtr = new MAPPING_DATA_WRAPPER::CudaKeyFrame();
 
@@ -87,7 +87,7 @@ void MappingKernelController::shutdownKernels(bool _localMappingFinished, bool _
     cout << "Shutting kernels down...\n";
 
     if (memory_is_initialized) {
-        CudaKeyFrameStorage::shutdown();
+        CudaKeyFrameAllocator::shutdown();
         cudaKeyFramePtr->freeMemory();
         delete cudaKeyFramePtr;
         if (searchForTriangulationOnGPU == 1) {

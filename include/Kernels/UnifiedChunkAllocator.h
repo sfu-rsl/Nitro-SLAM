@@ -4,6 +4,8 @@
 #include <vector>
 #include <queue>
 #include <new>
+#include <mutex>
+#include <shared_mutex>
 #include <cuda_runtime.h>
 #include "Kernels/CudaUtils.h"
 
@@ -30,10 +32,26 @@ public:
     T* um_data;
 };
 
+// Thread-safe pool of unified-memory slots for T.
+//
+// Slots are handed out from a free list first, then from fresh chunks. A slot
+// is constructed exactly once (placement new on first use) and recycled as-is
+// afterwards, so T is expected to own device buffers that survive recycling and
+// are released in T::freeMemory() at shutdown().
+//
+// The mutex is shared: mutating calls (allocate/deallocate/shutdown) take it
+// exclusively, read-only calls (prefetchToDevice/allocatedSlots) take it shared
+// so concurrent readers do not serialize against each other.
 template <typename T>
 class UnifiedChunkAllocator {
 public:
+    static UnifiedChunkAllocator<T>& instance() {
+        static UnifiedChunkAllocator<T> allocator;
+        return allocator;
+    }
+
     T* allocate() {
+        std::unique_lock<std::shared_timed_mutex> lock(mtx);
         if (!free_slots.empty()) {
             T* ptr = free_slots.front();
             free_slots.pop();
@@ -50,15 +68,27 @@ public:
     }
 
     void deallocate(T* ptr) {
+        if (ptr == nullptr) return;
+        std::unique_lock<std::shared_timed_mutex> lock(mtx);
         free_slots.push(ptr);
     }
 
     void prefetchToDevice(int device_id) {
+        std::shared_lock<std::shared_timed_mutex> lock(mtx);
         for (auto* chunk : chunks)
             chunk->prefetchToDevice(device_id);
     }
 
+    // Slots currently handed out, i.e. everything ever constructed minus the
+    // ones sitting on the free list.
+    int liveSlots() {
+        std::shared_lock<std::shared_timed_mutex> lock(mtx);
+        return watermark - (int)free_slots.size();
+    }
+
+    // Idempotent: a second call finds no chunks left and does nothing.
     void shutdown() {
+        std::unique_lock<std::shared_timed_mutex> lock(mtx);
         for (int i = 0; i < watermark; i++) {
             int chunk_idx = i / UnifiedChunk<T>::CHUNK_SIZE;
             int slot_idx  = i % UnifiedChunk<T>::CHUNK_SIZE;
@@ -77,6 +107,7 @@ private:
     std::vector<UnifiedChunk<T>*> chunks;
     std::queue<T*> free_slots;
     int watermark = 0;
+    std::shared_timed_mutex mtx;
 };
 
 #endif

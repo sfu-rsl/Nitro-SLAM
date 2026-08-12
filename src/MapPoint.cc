@@ -18,7 +18,7 @@
 
 #include "MapPoint.h"
 #include "ORBmatcher.h"
-#include "Kernels/CudaKeyFrameStorage.h"
+#include "Kernels/CudaKeyFrameAllocator.h"
 #include "Kernels/MappingKernelController.h"
 
 #include<mutex>

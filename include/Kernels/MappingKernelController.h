@@ -2,7 +2,7 @@
 #define MAPPING_KERNEL_CONTROLLER_H
 
 #include "CudaWrappers/CudaKeyFrame.h"
-#include "CudaKeyFrameStorage.h"
+#include "CudaKeyFrameAllocator.h"
 #include "CudaUtils.h"
 #include "FuseKernel.h"
 #include "SearchForTriangulationKernel.h"

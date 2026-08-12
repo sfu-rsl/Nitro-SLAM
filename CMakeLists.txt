@@ -130,7 +130,7 @@ src/Kernels/TriangulationMatchKernel.cu
 src/Kernels/MapPointCandidateKernel.cu
 src/Kernels/TrackingKernelController.cu
 src/Kernels/MappingKernelController.cu
-src/Kernels/CudaKeyFrameStorage.cu
+src/Kernels/CudaKeyFrameAllocator.cu
 src/Kernels/FuseKernel.cu
 src/Kernels/CudaUtils.cu
 src/Kernels/LoopClosingKernelController.cu
@@ -191,7 +191,7 @@ include/Kernels/KernelInterface.h
 include/Kernels/FuseKernel.h
 include/Kernels/TrackingKernelController.h
 include/Kernels/MappingKernelController.h
-include/Kernels/CudaKeyFrameStorage.h
+include/Kernels/CudaKeyFrameAllocator.h
 include/Kernels/CudaUtils.h
 include/Kernels/LoopClosingKernelController.h
 include/Kernels/CudaWrappers/CudaMapPoint.h

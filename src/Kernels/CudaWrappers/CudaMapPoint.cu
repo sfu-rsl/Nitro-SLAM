@@ -1,5 +1,5 @@
 #include "Kernels/CudaWrappers/CudaMapPoint.h"
-#include "Kernels/CudaKeyFrameStorage.h"
+#include "Kernels/CudaKeyFrameAllocator.h"
 #include <iostream>
 #include <map>
 #include <tuple>

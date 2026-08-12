@@ -32,12 +32,18 @@
 #include "GeometricCamera.h"
 #include "SerializationUtils.h"
 
+#include <atomic>
 #include <mutex>
 
 #include <boost/serialization/base_object.hpp>
 #include <boost/serialization/vector.hpp>
 #include <boost/serialization/map.hpp>
 
+
+namespace MAPPING_DATA_WRAPPER
+{
+class CudaKeyFrame;
+}
 
 namespace ORB_SLAM3
 {
@@ -305,6 +311,27 @@ public:
     void SetORBVocabulary(ORBVocabulary* pORBVoc);
     void SetKeyFrameDatabase(KeyFrameDatabase* pKFDB);
 
+    // GPU mirror of this keyframe, owned by the unified chunk allocator (see
+    // CudaKeyFrameAllocator). Held here so kernels reach it directly instead of
+    // looking it up by id. Atomic because local mapping and loop closing both
+    // create and drop it.
+    MAPPING_DATA_WRAPPER::CudaKeyFrame* GetCudaKeyFrame() const {
+        return mpCudaKeyFrame.load(std::memory_order_acquire);
+    }
+
+    // Publishes ptr only if no mirror is set yet; false means someone won the race.
+    bool SetCudaKeyFrameIfUnset(MAPPING_DATA_WRAPPER::CudaKeyFrame* ptr) {
+        MAPPING_DATA_WRAPPER::CudaKeyFrame* expected = nullptr;
+        return mpCudaKeyFrame.compare_exchange_strong(expected, ptr,
+                                                      std::memory_order_acq_rel,
+                                                      std::memory_order_acquire);
+    }
+
+    // Detaches and returns the mirror, so only one caller can ever free it.
+    MAPPING_DATA_WRAPPER::CudaKeyFrame* TakeCudaKeyFrame() {
+        return mpCudaKeyFrame.exchange(nullptr, std::memory_order_acq_rel);
+    }
+
     bool bImu;
 
     // The following variables are accesed from only 1 thread or never change (no mutex needed).
@@ -496,6 +523,9 @@ protected:
 
     // Calibration
     Eigen::Matrix3f mK_;
+
+    // GPU mirror slot (see GetCudaKeyFrame above)
+    std::atomic<MAPPING_DATA_WRAPPER::CudaKeyFrame*> mpCudaKeyFrame{nullptr};
 
     // Mutex
     std::mutex mMutexPose; // for pose, velocity and biases

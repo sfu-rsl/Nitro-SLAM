@@ -2,7 +2,7 @@
 #include <vector>
 
 #include "Kernels/TriangulationMatchKernel.h"
-#include "Kernels/CudaKeyFrameStorage.h"
+#include "Kernels/CudaKeyFrameAllocator.h"
 #include "Kernels/CudaUtils.h"
 #include "Thirdparty/DBoW2/DBoW2/FeatureVector.h"
 #include "CameraModels/GeometricCamera.h"
@@ -382,7 +382,7 @@ void TriangulationMatchKernel::initialize()
 {
     if (memory_is_initialized)
         return;
-    CudaKeyFrameStorage::initializeMemory();
+    CudaKeyFrameAllocator::initialize();
     memory_is_initialized = true;
 }
 
@@ -472,9 +472,7 @@ void TriangulationMatchKernel::launch(
     for (size_t s = 0; s < nNeigh; s++) {
         ORB_SLAM3::KeyFrame* pKF2 = kept[s];
 
-        h_kf2[s] = CudaKeyFrameStorage::getCudaKeyFrame(pKF2->mnId);
-        if (h_kf2[s] == nullptr)
-            h_kf2[s] = CudaKeyFrameStorage::addCudaKeyFrame(pKF2);
+        h_kf2[s] = CudaKeyFrameAllocator::getOrCreate(pKF2);
 
         const Sophus::SE3f T2w = pKF2->GetPose();
         const Sophus::SE3f Tw2 = pKF2->GetPoseInverse();
@@ -573,9 +571,7 @@ void TriangulationMatchKernel::launch(
     checkCudaError(cudaMemcpyAsync(d_mpExists2, h_mp2.data(), nMp2Slots*sizeof(bool), cudaMemcpyHostToDevice, stream), "TMK: mp2");
     checkCudaError(cudaMemsetAsync(d_matches, 0xFF, nMatchSlots*sizeof(int), stream), "TMK: init matches");
 
-    MAPPING_DATA_WRAPPER::CudaKeyFrame* kf1gpu = CudaKeyFrameStorage::getCudaKeyFrame(pKF1->mnId);
-    if (kf1gpu == nullptr)
-        kf1gpu = CudaKeyFrameStorage::addCudaKeyFrame(pKF1);
+    MAPPING_DATA_WRAPPER::CudaKeyFrame* kf1gpu = CudaKeyFrameAllocator::getOrCreate(pKF1);
 
     const bool bFisheye = (pKF1->mpCamera->GetType() == ORB_SLAM3::GeometricCamera::CAM_FISHEYE);
     float camPrecision = 1e-6f;

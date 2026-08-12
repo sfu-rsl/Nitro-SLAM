@@ -34,7 +34,7 @@
 #include "Kernels/LoopClosingKernelController.h"
 #include "Stats/TrackingStats.h"
 #include "Stats/LocalMappingStats.h"
-#include "Kernels/CudaKeyFrameStorage.h"
+#include "Kernels/CudaKeyFrameAllocator.h"
 
 using namespace std;
 

@@ -36,7 +36,7 @@
 #include "Kernels/TrackingKernelController.h"
 
 #include "Kernels/MappingKernelController.h"
-#include "Kernels/CudaKeyFrameStorage.h"
+#include "Kernels/CudaKeyFrameAllocator.h"
 
 #include <mutex>
 #include <chrono>

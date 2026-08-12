@@ -2,7 +2,7 @@
 #define LOOP_CLOSING_KERNEL_CONTROLLER_H
 
 #include "CudaWrappers/CudaKeyFrame.h"
-#include "CudaKeyFrameStorage.h"
+#include "CudaKeyFrameAllocator.h"
 #include "SearchAndFuseKernel.h"
 #include "SearchByProjectionKernel.h"
 // #include "SearchByBoWKernel.h"

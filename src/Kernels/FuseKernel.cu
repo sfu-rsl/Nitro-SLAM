@@ -238,9 +238,9 @@ void FuseKernel::launch(ORB_SLAM3::KeyFrame *neighKF, const vector<ORB_SLAM3::Ma
     if (!memory_is_initialized)
         initialize();
 
-    MAPPING_DATA_WRAPPER::CudaKeyFrame* d_neighKF = CudaKeyFrameStorage::getCudaKeyFrame(neighKF->mnId);
+    MAPPING_DATA_WRAPPER::CudaKeyFrame* d_neighKF = neighKF->GetCudaKeyFrame();
     if (d_neighKF == nullptr) {
-        cerr << "[ERROR] FuseKernel::launch: ] CudaKeyFrameStorage doesn't have the keyframe: " << neighKF->mnId << "\n";
+        cerr << "[ERROR] FuseKernel::launch: ] no GPU mirror for keyframe: " << neighKF->mnId << "\n";
         MappingKernelController::shutdownKernels(true, true);
         exit(EXIT_FAILURE);
     }
@@ -509,9 +509,9 @@ void FuseKernel::launchV2(std::vector<ORB_SLAM3::KeyFrame*> neighKFs, ORB_SLAM3:
     MAPPING_DATA_WRAPPER::CudaKeyFrame* neighKFsGPUAddress[neighKFSize];
 
     for (int i = 0; i < neighKFSize; i++) {
-        neighKFsGPUAddress[i] = CudaKeyFrameStorage::getCudaKeyFrame(neighKFs[i]->mnId);
+        neighKFsGPUAddress[i] = neighKFs[i]->GetCudaKeyFrame();
         if (neighKFsGPUAddress[i] == nullptr) {
-            cerr << "[ERROR] FuseKernel::launch: ] CudaKeyFrameStorage doesn't have the keyframe: " << neighKFs[i]->mnId << "\n";
+            cerr << "[ERROR] FuseKernel::launch: ] no GPU mirror for keyframe: " << neighKFs[i]->mnId << "\n";
             MappingKernelController::shutdownKernels(true, true);
             exit(EXIT_FAILURE);
         }
