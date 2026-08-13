@@ -508,3 +508,10 @@ if(realsense2_FOUND)
             Examples_old/Stereo-Inertial/stereo_inertial_realsense_D435i.cc)
     target_link_libraries(stereo_inertial_realsense_D435i_old ${PROJECT_NAME})
 endif()
+
+# Tests
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${PROJECT_SOURCE_DIR}/Examples/Tests)
+
+add_executable(test_normalize_rotation
+        Examples/Tests/test_normalize_rotation.cu)
+target_link_libraries(test_normalize_rotation ${PROJECT_NAME})

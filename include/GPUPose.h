@@ -143,18 +143,173 @@ namespace gpu {
         }
     }
 
+    // Old first-order polar step: cheap, but only a single Newton-Schulz
+    // iteration, so it is only accurate for R already very close to SO(3).
+    // Superseded by the one-sided Jacobi SVD below.
+    // template <typename T>
+    // hd_fn Eigen::Matrix<T,3,3> NormalizeRotation(const Eigen::Matrix<T, 3, 3>& R) {
+    //     Mat3<T> RTR = R.transpose() * R;
+    //
+    //     // First-order inverse sqrt approximation: inv_sqrt(RTR) ≈ 1.5 * I - 0.5 * RTR
+    //     Mat3<T> inv_sqrt = Mat3<T>::Identity() * T(1.5) - RTR * T(0.5);
+    //     // Mat3<T> inv_sqrt = RTR.inverse().cwiseSqrt();
+    //
+    //     // Apply polar step: R_new = R * inv_sqrt
+    //     Mat3<T> result = R * inv_sqrt;
+    //     EnsureDetPositive(result);
+    //     return result;
+    // }
+
+    // ---------------------------------------------------------------------
+    // Device-side SVD projection onto SO(3), matching the CPU reference in
+    // G2oTypes.h:
+    //
+    //     Eigen::JacobiSVD<Matrix3> svd(R, ComputeFullU | ComputeFullV);
+    //     return svd.matrixU() * svd.matrixV().transpose();
+    //
+    // Eigen's JacobiSVD is host-only (it allocates and runs a dynamically
+    // sized two-sided sweep), so we run a *one-sided* Jacobi SVD instead:
+    // sweeps of Givens rotations applied to column pairs of A (initialised to
+    // R) until the columns are mutually orthogonal.  Accumulating the same
+    // rotations into V gives A = R*V = U*S at convergence, hence
+    // R = U*S*V^T and the projection is U*V^T.
+    //
+    // Everything is fixed size and branch-light: no allocation, no dynamic
+    // indexing, all of it lives in registers.  Unlike the polar iteration it
+    // is exact (to working precision) for arbitrarily far-from-orthogonal
+    // input, which is what makes it agree with the CPU path.
+    // ---------------------------------------------------------------------
+
+    // Machine epsilon of the underlying real type, without pulling <limits>
+    // into device code.  T may also be a graphite::Dual, in which case the
+    // epsilon of its real part is what matters.
+    template <typename T>
+    struct RotationEpsTraits {   // double and Dual<double, *>
+        hd_fn static T value() { return T(2.220446049250313e-16); }
+    };
+    template <>
+    struct RotationEpsTraits<float> {
+        hd_fn static float value() { return 1.1920929e-7f; }
+    };
+    template <typename D>
+    struct RotationEpsTraits<graphite::Dual<float, D>> {
+        hd_fn static graphite::Dual<float, D> value() {
+            return graphite::Dual<float, D>(1.1920929e-7f);
+        }
+    };
+
+    template <typename T>
+    hd_fn T RotationEps() { return RotationEpsTraits<T>::value(); }
+
+    // Orthogonalize columns (p,q) of A by A <- A*J, accumulating V <- V*J with
+    // the Givens rotation J = [[c, s], [-s, c]].  Returns false when the pair
+    // is already orthogonal to working precision (used for early exit).
+    template <typename T>
+    hd_fn bool JacobiOrthogonalizePair(Mat3<T>& A, Mat3<T>& V, const int p, const int q) {
+        const T alpha = A.col(p).squaredNorm();
+        const T beta  = A.col(q).squaredNorm();
+        const T gamma = A.col(p).dot(A.col(q));
+
+        const T tol = RotationEps<T>();
+        if (gamma * gamma <= tol * tol * alpha * beta) {
+            return false;  // also covers gamma == 0 and zero columns
+        }
+
+        // Zero out the off-diagonal of [[alpha, gamma], [gamma, beta]]:
+        // t^2 + 2*zeta*t - 1 = 0, taking the root of smaller magnitude.
+        const T zeta = (beta - alpha) / (T(2) * gamma);
+        const T t = (zeta >= T(0)) ?  T(1) / ( zeta + sqrt(T(1) + zeta * zeta))
+                                   : -T(1) / (-zeta + sqrt(T(1) + zeta * zeta));
+        const T c = T(1) / sqrt(T(1) + t * t);
+        const T s = c * t;
+
+        #pragma unroll
+        for (int i = 0; i < 3; ++i) {
+            const T ap = A(i, p), aq = A(i, q);
+            A(i, p) = c * ap - s * aq;
+            A(i, q) = s * ap + c * aq;
+
+            const T vp = V(i, p), vq = V(i, q);
+            V(i, p) = c * vp - s * vq;
+            V(i, q) = s * vp + c * vq;
+        }
+        return true;
+    }
+
+    template <typename T>
+    hd_fn Mat3<T> NormalizeRotationJacobiSVD(const Mat3<T>& R) {
+        Mat3<T> A = R;                       // becomes U*S
+        Mat3<T> V = Mat3<T>::Identity();
+
+        // Convergence is cubic; 3-4 sweeps is typical for a 3x3, the cap is
+        // only there so a pathological input cannot spin forever.
+        #pragma unroll 4
+        for (int sweep = 0; sweep < 16; ++sweep) {
+            bool rotated = false;
+            rotated |= JacobiOrthogonalizePair(A, V, 0, 1);
+            rotated |= JacobiOrthogonalizePair(A, V, 0, 2);
+            rotated |= JacobiOrthogonalizePair(A, V, 1, 2);
+            if (!rotated) break;
+        }
+
+        // Singular values are the column norms of A; U is A with unit columns.
+        T sv[3];
+        #pragma unroll
+        for (int i = 0; i < 3; ++i) sv[i] = A.col(i).norm();
+
+        T smax = sv[0];
+        if (sv[1] > smax) smax = sv[1];
+        if (sv[2] > smax) smax = sv[2];
+
+        Mat3<T> U;
+        int good[3], bad[3];
+        int ngood = 0, nbad = 0;
+        const T floor_sv = smax * RotationEps<T>() * T(16);
+        #pragma unroll
+        for (int i = 0; i < 3; ++i) {
+            if (sv[i] > floor_sv && sv[i] > T(0)) {
+                U.col(i) = A.col(i) / sv[i];
+                good[ngood++] = i;
+            } else {
+                bad[nbad++] = i;
+            }
+        }
+
+        // Rank deficient input: the corresponding left singular vectors are
+        // arbitrary, so complete an orthonormal frame (cyclic cross products
+        // keep det(U) = +1).
+        if (ngood == 0) {
+            return Mat3<T>::Identity();      // R is numerically zero
+        }
+        else if (ngood == 1) {
+            const int g = good[0];
+            const int i = (g + 1) % 3, j = (g + 2) % 3;
+            const Vec3<T> u = U.col(g);
+            int m = 0;                       // axis least aligned with u
+            if (abs(u[1]) < abs(u[m])) m = 1;
+            if (abs(u[2]) < abs(u[m])) m = 2;
+            Vec3<T> a = Vec3<T>::Zero();
+            a[m] = T(1);
+            U.col(i) = (a - u * u.dot(a)).normalized();
+            U.col(j) = u.cross(U.col(i));
+        }
+        else if (ngood == 2) {
+            const int k = bad[0];
+            U.col(k) = U.col((k + 1) % 3).cross(U.col((k + 2) % 3));
+        }
+
+        // Note: like the CPU reference this returns U*V^T verbatim, so a
+        // reflection in (det(R) < 0) yields a reflection out.  Every caller
+        // here feeds in a near-rotation.  Uncomment for a hard SO(3) guard:
+        // Mat3<T> Rn = U * V.transpose();
+        // EnsureDetPositive(Rn);
+        // return Rn;
+        return U * V.transpose();
+    }
+
     template <typename T>
     hd_fn Eigen::Matrix<T,3,3> NormalizeRotation(const Eigen::Matrix<T, 3, 3>& R) {
-        Mat3<T> RTR = R.transpose() * R;
-
-        // First-order inverse sqrt approximation: inv_sqrt(RTR) ≈ 1.5 * I - 0.5 * RTR
-        Mat3<T> inv_sqrt = Mat3<T>::Identity() * T(1.5) - RTR * T(0.5);
-        // Mat3<T> inv_sqrt = RTR.inverse().cwiseSqrt();
-
-        // Apply polar step: R_new = R * inv_sqrt
-        Mat3<T> result = R * inv_sqrt;
-        EnsureDetPositive(result);
-        return result;
+        return NormalizeRotationJacobiSVD(R);
     }
 
     /*
