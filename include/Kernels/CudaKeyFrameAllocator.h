@@ -19,28 +19,19 @@ namespace ORB_SLAM3 {
 // UnifiedChunkAllocator<CudaKeyFrame> singleton.
 namespace CudaKeyFrameAllocator {
     // Must be called once the CUDA context and CudaUtils are ready, before any
-    // KeyFrame reaches the GPU. create()/getOrCreate() are no-ops before it.
+    // KeyFrame reaches the GPU. create() is fatal before it.
     void initialize();
 
-    // Allocates and fills the GPU mirror of KF, publishes it on KF and returns
-    // it. Returns the existing mirror if KF already has one.
+    // The single way to get at KF's mirror: returns the one KF already has, or
+    // allocates and fills a slot, publishes it on KF and returns that. Returns
+    // nullptr once the allocator has been shut down.
     MAPPING_DATA_WRAPPER::CudaKeyFrame* create(ORB_SLAM3::KeyFrame* KF);
-
-    // KF's mirror, creating it on demand. Returns nullptr if the allocator is
-    // not initialized or has already been shut down.
-    MAPPING_DATA_WRAPPER::CudaKeyFrame* getOrCreate(ORB_SLAM3::KeyFrame* KF);
 
     // Detaches KF's mirror and returns its slot to the free list.
     void destroy(ORB_SLAM3::KeyFrame* KF);
 
-    void addFeatureVector(ORB_SLAM3::KeyFrame* KF, const DBoW2::FeatureVector& featVec);
-
-    void prefetchToDevice();
-
     // Frees every slot. Safe to call from more than one controller.
     void shutdown();
-
-    int liveKeyFrames();
 }
 
 #endif

@@ -17,14 +17,14 @@ class CudaKeyFrame {
     private:
         void initializeMemory();
         void copyGPUCamera(CudaCamera *out, ORB_SLAM3::GeometricCamera *camera);
-        void copyFeatVec(unsigned int *out, int *outIndexes, DBoW2::FeatureVector inp);
+        void copyFeatVec(unsigned int *out, int *outIndexes, const DBoW2::FeatureVector &inp);
 
     public:
         CudaKeyFrame();
         void setGPUAddress(CudaKeyFrame* ptr);
         void setMemory(ORB_SLAM3::KeyFrame* KF);
         void setMemory(ORB_SLAM3::KeyFrame &KF);
-        void addFeatureVector(DBoW2::FeatureVector featVec);
+        void addFeatureVector(const DBoW2::FeatureVector &featVec);
         void setAsEmpty() { isEmpty = true; };
         void freeMemory();
 

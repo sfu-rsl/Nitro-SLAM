@@ -28,6 +28,7 @@
 #include "Stats/LocalMappingStats.h"
 #include "Kernels/MappingKernelController.h"
 #include "Kernels/CudaKeyFrameAllocator.h"
+#include "Kernels/CudaWrappers/CudaKeyFrame.h"
 #include "Kernels/LoopClosingKernelController.h"
 #include<mutex>
 #include<chrono>
@@ -456,7 +457,20 @@ void LocalMapping::ProcessNewKeyFrame()
     // Compute Bags of Words structures
     mpCurrentKeyFrame->ComputeBoW();
     if (MappingKernelController::is_active) {
-        CudaKeyFrameAllocator::addFeatureVector(mpCurrentKeyFrame, mpCurrentKeyFrame->mFeatVec);
+#ifdef REGISTER_LOCAL_MAPPING_STATS
+        std::chrono::steady_clock::time_point time_StartAddFeatVec = std::chrono::steady_clock::now();
+#endif
+        MAPPING_DATA_WRAPPER::CudaKeyFrame* pCudaKF = CudaKeyFrameAllocator::create(mpCurrentKeyFrame);
+        if (pCudaKF)
+            pCudaKF->addFeatureVector(mpCurrentKeyFrame->mFeatVec);
+        else
+            cout << "[ERROR] LocalMapping::ProcessNewKeyFrame: KF " << mpCurrentKeyFrame->mnId << " has no GPU mirror!\n";
+
+#ifdef REGISTER_LOCAL_MAPPING_STATS
+        std::chrono::steady_clock::time_point time_EndAddFeatVec = std::chrono::steady_clock::now();
+        double timeAddFeatVec = std::chrono::duration_cast<std::chrono::duration<double,std::milli> >(time_EndAddFeatVec - time_StartAddFeatVec).count();
+        LocalMappingStats::getInstance().addFeatureVector_time.push_back(timeAddFeatVec);
+#endif
     }
 
     // Associate MapPoints to the new keyframe and update normal and descriptor

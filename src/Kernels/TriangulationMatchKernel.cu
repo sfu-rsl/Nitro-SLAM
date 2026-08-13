@@ -472,7 +472,7 @@ void TriangulationMatchKernel::launch(
     for (size_t s = 0; s < nNeigh; s++) {
         ORB_SLAM3::KeyFrame* pKF2 = kept[s];
 
-        h_kf2[s] = CudaKeyFrameAllocator::getOrCreate(pKF2);
+        h_kf2[s] = CudaKeyFrameAllocator::create(pKF2);
 
         const Sophus::SE3f T2w = pKF2->GetPose();
         const Sophus::SE3f Tw2 = pKF2->GetPoseInverse();
@@ -571,7 +571,7 @@ void TriangulationMatchKernel::launch(
     checkCudaError(cudaMemcpyAsync(d_mpExists2, h_mp2.data(), nMp2Slots*sizeof(bool), cudaMemcpyHostToDevice, stream), "TMK: mp2");
     checkCudaError(cudaMemsetAsync(d_matches, 0xFF, nMatchSlots*sizeof(int), stream), "TMK: init matches");
 
-    MAPPING_DATA_WRAPPER::CudaKeyFrame* kf1gpu = CudaKeyFrameAllocator::getOrCreate(pKF1);
+    MAPPING_DATA_WRAPPER::CudaKeyFrame* kf1gpu = CudaKeyFrameAllocator::create(pKF1);
 
     const bool bFisheye = (pKF1->mpCamera->GetType() == ORB_SLAM3::GeometricCamera::CAM_FISHEYE);
     float camPrecision = 1e-6f;

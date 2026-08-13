@@ -252,7 +252,7 @@ int SearchAndFuseKernel::launch(std::vector<ORB_SLAM3::KeyFrame*> connectedKFs, 
 
     for (int i=0; i < connectedKFSize; i++){
         ORB_SLAM3::KeyFrame* pKF = connectedKFs[i];
-        h_KeyFrames[i] = CudaKeyFrameAllocator::getOrCreate(pKF);
+        h_KeyFrames[i] = CudaKeyFrameAllocator::create(pKF);
     }
 
 #ifdef REGISTER_LOOP_CLOSING_STATS

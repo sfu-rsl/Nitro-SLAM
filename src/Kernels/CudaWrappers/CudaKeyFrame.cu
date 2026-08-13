@@ -144,7 +144,7 @@ namespace MAPPING_DATA_WRAPPER
         copyGPUCamera(&camera2, KF->mpCamera2);
     }
 
-    void CudaKeyFrame::addFeatureVector(DBoW2::FeatureVector featVec) {
+    void CudaKeyFrame::addFeatureVector(const DBoW2::FeatureVector &featVec) {
         mFeatCount = featVec.size();
         unsigned int tmp_mFeatVec[mFeatCount * MAX_FEAT_PER_WORD];
         int tmp_mFeatVecStartIndexes[mFeatCount];
@@ -164,7 +164,7 @@ namespace MAPPING_DATA_WRAPPER
         out->toK = camera->toK_();
     }
 
-    void CudaKeyFrame::copyFeatVec(unsigned int *out, int *outIndexes, DBoW2::FeatureVector inp) {
+    void CudaKeyFrame::copyFeatVec(unsigned int *out, int *outIndexes, const DBoW2::FeatureVector &inp) {
         DBoW2::FeatureVector::const_iterator f1it = inp.begin();
         DBoW2::FeatureVector::const_iterator f1end = inp.end();
         int outFeatureVecSize = 0, counter = 0;

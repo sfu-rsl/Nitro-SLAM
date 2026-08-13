@@ -682,7 +682,7 @@ int SearchByProjectionKernel::launch(ORB_SLAM3::KeyFrame* pKF, Sophus::Sim3<floa
         }
     }
 
-    MAPPING_DATA_WRAPPER::CudaKeyFrame* tempKF = CudaKeyFrameAllocator::getOrCreate(pKF);
+    MAPPING_DATA_WRAPPER::CudaKeyFrame* tempKF = CudaKeyFrameAllocator::create(pKF);
 
     const cudaStream_t stream = cudaStreamPerThread;
     cudaMemcpyAsync(d_KeyFrame, tempKF, sizeof(MAPPING_DATA_WRAPPER::CudaKeyFrame), cudaMemcpyDeviceToDevice, stream);
@@ -795,7 +795,7 @@ int SearchByProjectionKernel::launch(ORB_SLAM3::KeyFrame* pKF, Sophus::Sim3<floa
     }
 
 
-    MAPPING_DATA_WRAPPER::CudaKeyFrame* tempKF = CudaKeyFrameAllocator::getOrCreate(pKF);
+    MAPPING_DATA_WRAPPER::CudaKeyFrame* tempKF = CudaKeyFrameAllocator::create(pKF);
 
     const cudaStream_t stream = cudaStreamPerThread;
 
@@ -913,7 +913,7 @@ void SearchByProjectionKernel::mergedlaunch(ORB_SLAM3::KeyFrame* pKF, const std:
         }
     }
     
-    MAPPING_DATA_WRAPPER::CudaKeyFrame* d_KeyFrame = CudaKeyFrameAllocator::getOrCreate(pKF);
+    MAPPING_DATA_WRAPPER::CudaKeyFrame* d_KeyFrame = CudaKeyFrameAllocator::create(pKF);
     // cudaMemcpy(d_KeyFrame, tempKF, sizeof(MAPPING_DATA_WRAPPER::CudaKeyFrame), cudaMemcpyDeviceToDevice);
 
     const cudaStream_t stream = cudaStreamPerThread;
@@ -1043,7 +1043,7 @@ void SearchByProjectionKernel::mergedlaunch(vector<ORB_SLAM3::KeyFrame*> current
     
     for (int i=0; i<covKFsSize; i++){
         ORB_SLAM3::KeyFrame* pKF = currentCovKFs[i];
-        h_KeyFrames[i] = CudaKeyFrameAllocator::getOrCreate(pKF);
+        h_KeyFrames[i] = CudaKeyFrameAllocator::create(pKF);
     }
     
     const cudaStream_t stream = cudaStreamPerThread;

@@ -21,11 +21,6 @@ namespace {
         return UnifiedChunkAllocator<MAPPING_DATA_WRAPPER::CudaKeyFrame>::instance();
     }
 
-    inline bool usable() {
-        return memory_is_initialized.load(std::memory_order_acquire) &&
-               !memory_is_free.load(std::memory_order_acquire);
-    }
-
     // Mirroring a keyframe before the CUDA side is up would fill the slot from
     // an unset CudaUtils configuration, so treat it as fatal like before.
     inline void abortIfNotInitialized(ORB_SLAM3::KeyFrame* KF) {
@@ -84,13 +79,6 @@ MAPPING_DATA_WRAPPER::CudaKeyFrame* create(ORB_SLAM3::KeyFrame* KF) {
     return ptr;
 }
 
-MAPPING_DATA_WRAPPER::CudaKeyFrame* getOrCreate(ORB_SLAM3::KeyFrame* KF) {
-    MAPPING_DATA_WRAPPER::CudaKeyFrame* ptr = KF->GetCudaKeyFrame();
-    if (ptr != nullptr)
-        return ptr;
-    return create(KF);
-}
-
 void destroy(ORB_SLAM3::KeyFrame* KF) {
 #ifdef REGISTER_LOCAL_MAPPING_STATS
     std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
@@ -116,50 +104,12 @@ void destroy(ORB_SLAM3::KeyFrame* KF) {
 #endif
 }
 
-void addFeatureVector(ORB_SLAM3::KeyFrame* KF, const DBoW2::FeatureVector& featVec) {
-#ifdef REGISTER_LOCAL_MAPPING_STATS
-    std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
-#endif
-
-    MAPPING_DATA_WRAPPER::CudaKeyFrame* ptr = getOrCreate(KF);
-    if (ptr == nullptr) {
-        cout << "[ERROR] CudaKeyFrameAllocator::addFeatureVector: KF " << KF->mnId << " has no GPU mirror!\n";
-        return;
-    }
-
-    ptr->addFeatureVector(featVec);
-
-    int device_id;
-    cudaGetDevice(&device_id);
-    cudaMemPrefetchAsync(ptr, sizeof(MAPPING_DATA_WRAPPER::CudaKeyFrame), device_id);
-
-    DEBUG_PRINT("addFeatureVector: " << KF->mnId << endl);
-
-#ifdef REGISTER_LOCAL_MAPPING_STATS
-    std::chrono::steady_clock::time_point end = std::chrono::steady_clock::now();
-    double time = std::chrono::duration_cast<std::chrono::duration<double,std::milli> >(end - start).count();
-    LocalMappingStats::getInstance().addFeatureVector_time.push_back(time);
-#endif
-}
-
-void prefetchToDevice() {
-    if (!usable())
-        return;
-    int device_id;
-    cudaGetDevice(&device_id);
-    keyFrameSlots().prefetchToDevice(device_id);
-}
-
 void shutdown() {
     if (!memory_is_initialized.load(std::memory_order_acquire))
         return;
     if (memory_is_free.exchange(true, std::memory_order_acq_rel))
         return;
     keyFrameSlots().shutdown();
-}
-
-int liveKeyFrames() {
-    return keyFrameSlots().liveSlots();
 }
 
 }

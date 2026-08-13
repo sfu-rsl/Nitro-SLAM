@@ -371,11 +371,11 @@ void MapPointCandidateKernel::launch(
                                          : h_pose2[2*s];
         h_mb2[s] = pKF2->mb;
 
-        MAPPING_DATA_WRAPPER::CudaKeyFrame* k = CudaKeyFrameAllocator::getOrCreate(pKF2);
+        MAPPING_DATA_WRAPPER::CudaKeyFrame* k = CudaKeyFrameAllocator::create(pKF2);
         h_kf2[s] = k->gpuAddr;
     }
 
-    MAPPING_DATA_WRAPPER::CudaKeyFrame* kf1 = CudaKeyFrameAllocator::getOrCreate(pKF1);
+    MAPPING_DATA_WRAPPER::CudaKeyFrame* kf1 = CudaKeyFrameAllocator::create(pKF1);
 
     thrust::device_vector<CandIn>   d_in    = h_in;
     thrust::device_vector<CamPose>  d_pose1 = h_pose1;
