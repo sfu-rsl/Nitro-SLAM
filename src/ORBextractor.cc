@@ -469,23 +469,17 @@ namespace ORB_SLAM3
 
         if (TrackingKernelController::orbExtractionKernelRunStatus == 1) {
 
-            int points[32] = {0,  3,  1,  3, 2,  2, 3,  1, 3, 0, 3, -1, 2, -2, 1, -3,
-                              0, -3, -1, -3, -2, -2, -3, -1, -3, 0, -3,  1, -2,  2, -1,  3};
-
             checkCudaError(cudaStreamCreate(&cudaStream), "[ORBextractor::] Failed to create stream cudaStream");
             checkCudaError(cudaStreamCreate(&cudaStreamCpy), "[ORBextractor::] Failed to create stream cudaStreamCpy");
             checkCudaError(cudaStreamCreate(&cudaStreamBlur), "[ORBextractor::] Failed to create stream cudaStreamBlur");
             checkCudaError(cudaEventCreateWithFlags(&resizeComplete, cudaEventDisableTiming), "[ORBextractor::] Failed to create event resizeComplete");
             checkCudaError(cudaEventCreateWithFlags(&blurComplete, cudaEventDisableTiming), "[ORBextractor::] Failed to create event blurComplete");
-            checkCudaError(cudaEventCreateWithFlags(&interComplete, cudaEventDisableTiming), "[ORBextractor::] Failed to create event interComplete");
 
             allocMemory(imageWidth, imageHeight, imageWidth);
             allocInputMemory(imageWidth, imageHeight, imageWidth);
 
             checkCudaError(cudaMalloc(&d_scaleFactor, sizeof(float)*mvScaleFactor.size()), "[ORBextractor::] Failed to allocate memory for d_scaleFactor");
             checkCudaError(cudaMemcpy(d_scaleFactor, mvScaleFactor.data(), sizeof(float)*mvScaleFactor.size(), cudaMemcpyHostToDevice), "[ORBextractor::] Failed to copy d_scaleFactor");
-            checkCudaError(cudaMalloc(&d_points, 32*sizeof(int)), "[ORBextractor::] Failed to allocate memory for d_points");
-            checkCudaError(cudaMemcpyAsync(d_points, points, 32*sizeof(int), cudaMemcpyHostToDevice, cudaStream), "[ORBextractor::] Failed to copy d_points");
             checkCudaError(cudaMalloc(&d_corner_size, sizeof(uint)*nlevels), "[ORBextractor::] Failed to allocate memory for d_corner_size");
             checkCudaError(cudaMallocHost(&corner_size, sizeof(uint)*nlevels), "[ORBextractor::] Failed to allocate host memory for corner_size");
 
@@ -1284,7 +1278,7 @@ namespace ORB_SLAM3
     {
         allKeypoints.resize(nlevels);
 
-        fast_extract(d_images, d_inputImage, iniThFAST, minThFAST, d_R, d_R_low, d_points, n_, d_corner_buffer, d_corner_size, cols, rows, imageStep, d_scaleFactor, nlevels, cudaStream, interComplete, this->mvImagePyramid[0]);
+        fast_extract(d_images, d_inputImage, iniThFAST, minThFAST, d_R, d_corner_buffer, d_corner_size, cols, rows, imageStep, d_scaleFactor, nlevels, cudaStream);
         compute_orientation(d_images, d_inputImage, d_corner_buffer, this->d_corner_size, rows*cols, this->umax_gpu, imageStep, nlevels, cols, rows, d_scaleFactor, cudaStream);
         cudaStreamWaitEvent(cudaStream, blurComplete, 0);
         compute_descriptor(d_imagesBlured, d_inputImageBlured, d_corner_buffer, d_corner_size, rows*cols, d_pattern, imageStep, nlevels, cols, rows, d_scaleFactor, cudaStream);
@@ -1299,6 +1293,10 @@ namespace ORB_SLAM3
             cudaMemcpyAsync(corner_buffer, d_corner_buffer, sizeof(GpuPoint)*size, cudaMemcpyDeviceToHost, cudaStream);
         }
         cudaStreamSynchronize(cudaStream);
+        // The pyramid copy-back runs on its own stream. Callers read
+        // mvImagePyramid straight after extraction (Frame::ComputeStereoMatches
+        // does), so it has to be finished before this returns.
+        cudaStreamSynchronize(cudaStreamCpy);
 
         const int minBorderX = EDGE_THRESHOLD-3;
         const int minBorderY = minBorderX;
@@ -1324,6 +1322,15 @@ namespace ORB_SLAM3
             // lands at a different place in the image and a different subset of
             // keypoints survives. The border is restored after distribution - the
             // descriptors were computed against the absolute coordinates.
+            // The kernel appends through an atomic counter, so the buffer order
+            // depends on how the blocks interleave. DistributeOctTree keeps the
+            // first keypoint of maximal response in each node, which makes that
+            // order observable in the output; sorting by position pins it.
+            std::sort(corner_buffer, corner_buffer + size,
+                      [](const GpuPoint &a, const GpuPoint &b) {
+                          return a.y != b.y ? a.y < b.y : a.x < b.x;
+                      });
+
             for(uint i=0; i<size; i++)
             {
                 // cout << size << " " << i << endl;
@@ -1365,7 +1372,11 @@ namespace ORB_SLAM3
 
     void ORBextractor::freeMemory() {
         checkCudaError(cudaFree(this->d_R), "[ORBextractor::] Failed to free d_R");
-        checkCudaError(cudaFree(this->d_R_low), "[ORBextractor::] Failed to free d_R_low");
+
+        checkCudaError(cudaFree(this->d_resizeXofs), "[ORBextractor::] Failed to free d_resizeXofs");
+        checkCudaError(cudaFree(this->d_resizeYofs), "[ORBextractor::] Failed to free d_resizeYofs");
+        checkCudaError(cudaFree(this->d_resizeXalpha), "[ORBextractor::] Failed to free d_resizeXalpha");
+        checkCudaError(cudaFree(this->d_resizeYalpha), "[ORBextractor::] Failed to free d_resizeYalpha");
 
         checkCudaError(cudaFree(this->d_corner_buffer), "[ORBextractor::] Failed to free d_corner_buffer");
         checkCudaError(cudaFreeHost(this->corner_buffer), "[ORBextractor::] Failed to free corner_buffer");
@@ -1386,7 +1397,8 @@ namespace ORB_SLAM3
 
     void ORBextractor::allocMemory(int w, int h, int imageStep) {
         checkCudaError(cudaMalloc(&(this->d_R), sizeof(uint8_t)*w*h*this->nlevels), "[ORBextractor::] Failed to allocate memory for d_R");
-        checkCudaError(cudaMalloc(&(this->d_R_low), sizeof(uint8_t)*w*h*this->nlevels), "[ORBextractor::] Failed to allocate memory for d_R_low");
+
+        buildResizeTables(w, h);
 
         checkCudaError(cudaMalloc(&(this->d_corner_buffer), sizeof(GpuPoint)*w*h*this->nlevels), "[ORBextractor::] Failed to allocate memory for d_corner_buffer");
         checkCudaError(cudaMallocHost(&(this->corner_buffer), sizeof(GpuPoint)*w*h*this->nlevels), "[ORBextractor::] Failed to allocate memory for corner_buffer");
@@ -1397,6 +1409,36 @@ namespace ORB_SLAM3
         checkCudaError(cudaMallocHost(&outputImages, sizeof(uchar)*w*h*nlevels), "[ORBextractor::] Failed to allocate memory for outputImages");
 
         this->allocatedSize = w*h; 
+    }
+
+    // The pyramid geometry is fixed for the whole run, so cv::resize's
+    // interpolation tables are built once here instead of per frame.
+    void ORBextractor::buildResizeTables(int w, int h) {
+        mvLevelCols.resize(nlevels);
+        mvLevelRows.resize(nlevels);
+        for (int level = 0; level < nlevels; level++) {
+            const float invScale = 1.0f / mvScaleFactor[level];
+            mvLevelCols[level] = cvRound((float)w * invScale);
+            mvLevelRows[level] = cvRound((float)h * invScale);
+        }
+
+        vector<int> xofs(nlevels*w, 0), yofs(nlevels*h, 0);
+        vector<short> xalpha(nlevels*w*2, 0), yalpha(nlevels*h*2, 0);
+        for (int level = 1; level < nlevels; level++) {
+            build_resize_tables(mvLevelCols[level-1], mvLevelCols[level],
+                                &xofs[level*w], &xalpha[level*w*2]);
+            build_resize_tables(mvLevelRows[level-1], mvLevelRows[level],
+                                &yofs[level*h], &yalpha[level*h*2]);
+        }
+
+        checkCudaError(cudaMalloc(&d_resizeXofs, sizeof(int)*xofs.size()), "[ORBextractor::] Failed to allocate memory for d_resizeXofs");
+        checkCudaError(cudaMalloc(&d_resizeYofs, sizeof(int)*yofs.size()), "[ORBextractor::] Failed to allocate memory for d_resizeYofs");
+        checkCudaError(cudaMalloc(&d_resizeXalpha, sizeof(short)*xalpha.size()), "[ORBextractor::] Failed to allocate memory for d_resizeXalpha");
+        checkCudaError(cudaMalloc(&d_resizeYalpha, sizeof(short)*yalpha.size()), "[ORBextractor::] Failed to allocate memory for d_resizeYalpha");
+        checkCudaError(cudaMemcpy(d_resizeXofs, xofs.data(), sizeof(int)*xofs.size(), cudaMemcpyHostToDevice), "[ORBextractor::] Failed to copy d_resizeXofs");
+        checkCudaError(cudaMemcpy(d_resizeYofs, yofs.data(), sizeof(int)*yofs.size(), cudaMemcpyHostToDevice), "[ORBextractor::] Failed to copy d_resizeYofs");
+        checkCudaError(cudaMemcpy(d_resizeXalpha, xalpha.data(), sizeof(short)*xalpha.size(), cudaMemcpyHostToDevice), "[ORBextractor::] Failed to copy d_resizeXalpha");
+        checkCudaError(cudaMemcpy(d_resizeYalpha, yalpha.data(), sizeof(short)*yalpha.size(), cudaMemcpyHostToDevice), "[ORBextractor::] Failed to copy d_resizeYalpha");
     }
 
     void ORBextractor::allocInputMemory(int w, int h, int imageStep) {
@@ -1589,7 +1631,9 @@ namespace ORB_SLAM3
     void ORBextractor::ComputePyramidGPU(cv::Mat image)
     {
         checkCudaError(cudaMemcpyAsync(d_inputImage, image.data, sizeof(uchar)*image.rows*image.step[0], cudaMemcpyHostToDevice, cudaStream),"[ORBextractor::] Failed to copy d_inputImage");
-        resize(image.rows, image.cols, d_scaleFactor, d_inputImage, d_images, nlevels, image.step[0], cudaStream);
+        resize(d_inputImage, image.step[0], d_images, mvLevelCols.data(), mvLevelRows.data(),
+               nlevels, image.cols, image.rows, d_resizeXofs, d_resizeXalpha,
+               d_resizeYofs, d_resizeYalpha, cudaStream);
         checkCudaError(cudaEventRecord(resizeComplete, cudaStream),"[ORBextractor::] Failed to record event resizeComplete");
 
         //BLUR
@@ -1615,7 +1659,6 @@ namespace ORB_SLAM3
             this->freeMemory();
             this->freeInputMemory();
             checkCudaError(cudaFree(d_scaleFactor),"[ORBextractor::] Failed to free d_scaleFactor");
-            checkCudaError(cudaFree(this->d_points),"[ORBextractor::] Failed to free d_points");
             checkCudaError(cudaFree(this->d_corner_size),"[ORBextractor::] Failed to free d_corner_size");
             checkCudaError(cudaFreeHost(this->corner_size),"[ORBextractor::] Failed to free corner_size");
             checkCudaError(cudaFree(this->umax_gpu),"[ORBextractor::] Failed to free umax_gpu");
@@ -1626,7 +1669,6 @@ namespace ORB_SLAM3
             checkCudaError(cudaStreamDestroy(cudaStreamBlur), "[ORBextractor::] Failed to destroy stream cudaStreamBlur");
             checkCudaError(cudaEventDestroy(resizeComplete), "[ORBextractor::] Failed to destroy event resizeComplete");
             checkCudaError(cudaEventDestroy(blurComplete), "[ORBextractor::] Failed to destroy event blurComplete");
-            checkCudaError(cudaEventDestroy(interComplete), "[ORBextractor::] Failed to destroy event interComplete");
         }
     }
 

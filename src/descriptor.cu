@@ -17,17 +17,31 @@
 
 // __device__ __constant__ int HALF_PATCH_SIZE_GPU;
 
-__device__ inline void comp_descr(const uchar *image, ORB_SLAM3::GpuPoint &pt, cv::Point *pattern, int imageStep) {
+// BORDER_REFLECT_101, the border cv::copyMakeBorder puts around each level of
+// the CPU pyramid. The GPU pyramid has no border, and a rotated 31-pixel patch
+// reaches about 21 pixels from its centre while keypoints sit as close as 19 to
+// the edge, so without this the outermost keypoints sample the neighbouring row
+// - or the next pyramid level - and get a descriptor built from unrelated
+// pixels.
+__device__ __forceinline__ int reflect101(int v, int len) {
+    if (v < 0)
+        return -v;
+    if (v >= len)
+        return 2 * (len - 1) - v;
+    return v;
+}
+
+__device__ inline void comp_descr(const uchar *image, ORB_SLAM3::GpuPoint &pt, cv::Point *pattern, int imageStep, int cols, int rows) {
         const float factorPI = (float)(CV_PI/180.f);
         const float angle = (float)pt.angle*factorPI;
         const float a = (float)cos(angle), b = (float)sin(angle);
 
-        const uchar* center = &(image[(int)pt.y*imageStep+(int)pt.x]);
+        const int cx = (int)pt.x, cy = (int)pt.y;
         const int step = imageStep;
 
 #define GET_VALUE(idx) \
-        center[(int)round(pattern[idx].x*b + pattern[idx].y*a)*step + \
-               (int)round(pattern[idx].x*a - pattern[idx].y*b)]
+        image[reflect101(cy + (int)round(pattern[idx].x*b + pattern[idx].y*a), rows)*step + \
+              reflect101(cx + (int)round(pattern[idx].x*a - pattern[idx].y*b), cols)]
 
         #pragma unroll
         for (int i = 0; i < 32; ++i, pattern += 16)
@@ -74,11 +88,12 @@ __global__ void compute_descriptor_kernel(uchar *images, uchar *inputImage, ORB_
 
     const float scale = mvScaleFactor[level];
     const int new_cols = round(cols * 1/scale);
+    const int new_rows = round(rows * 1/scale);
     const int imageStep = (level == 0) * inputImageStep + (level != 0) * new_cols;
 
     const uchar *myImagePyrimid = im[imIndex];
-    
-    comp_descr(myImagePyrimid, points[index], pattern, imageStep);
+
+    comp_descr(myImagePyrimid, points[index], pattern, imageStep, new_cols, new_rows);
 
 //    printf("level: %d, index: %d\t%d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d\n", level, index,
 //           points[index].descriptor[0], points[index].descriptor[1], points[index].descriptor[2], points[index].descriptor[3], points[index].descriptor[4], points[index].descriptor[5], points[index].descriptor[6], points[index].descriptor[7], points[index].descriptor[8], points[index].descriptor[9], points[index].descriptor[10], points[index].descriptor[11], points[index].descriptor[12], points[index].descriptor[13], points[index].descriptor[14], points[index].descriptor[15], points[index].descriptor[16], points[index].descriptor[17], points[index].descriptor[18], points[index].descriptor[19], points[index].descriptor[20], points[index].descriptor[21], points[index].descriptor[22], points[index].descriptor[23], points[index].descriptor[24], points[index].descriptor[25], points[index].descriptor[26], points[index].descriptor[27], points[index].descriptor[28], points[index].descriptor[29], points[index].descriptor[30], points[index].descriptor[31]);

@@ -224,365 +224,201 @@ __device__ int isKeyPoint2(const uchar* img, const int i, const int j, const int
     }
 }
 
-__device__ bool isMax(int x, int y, int step, uint8_t *scoreMat) {
-    int score = scoreMat[index(x, y, step)];
-    bool ismax =
-            score > scoreMat[index(x - 1, y - 1, step)] &&
-            score > scoreMat[index(x    , y - 1, step)] &&
-            score > scoreMat[index(x + 1, y - 1, step)] &&
 
-            score > scoreMat[index(x - 1, y    , step)] &&
-            score > scoreMat[index(x + 1, y    , step)] &&
+// The detection window of one pyramid level, in that level's pixel coordinates.
+// Shared by the score and NMS kernels so they cannot disagree about which
+// pixels exist.
+struct LevelGeometry {
+    int cols, rows;      // level image size
+    int minBorderX, minBorderY, maxBorderX, maxBorderY;
+    int nCols, nRows;    // cell grid, matching ComputeKeyPointsOctTree
+    int wCell, hCell;
+};
 
-            score > scoreMat[index(x - 1, y + 1, step)] &&
-            score > scoreMat[index(x    , y + 1, step)] &&
-            score > scoreMat[index(x + 1, y + 1, step)];
-    return ismax;
-}
-
-__global__
-void fast_corner(uchar *images, uchar *inputImage, uint8_t *d_Rs, ORB_SLAM3::GpuPoint *buffers, int rows, int cols, uint8_t t_h, uint8_t t_low, uint *sizes, float *mvScaleFactor, int maxLevel, int inputImageStep){
-    const int tid = threadIdx.y * blockDim.x + threadIdx.x;
-    const int level = blockIdx.z * blockDim.z + threadIdx.z;
-
+__device__ __forceinline__ LevelGeometry levelGeometry(int level, int cols,
+                                                       int rows,
+                                                       const float *mvScaleFactor) {
+    LevelGeometry g;
     const float scale = mvScaleFactor[level];
-    const int new_rows = round(rows * 1/scale);
-    const int new_cols = round(cols * 1/scale);
-    const int minBorderX = EDGE_THRESHOLD-3;
-    const int minBorderY = minBorderX;
-    const int maxBorderX = new_cols-EDGE_THRESHOLD+3;
-    const int maxBorderY = new_rows-EDGE_THRESHOLD+3;
+    g.rows = round(rows * 1 / scale);
+    g.cols = round(cols * 1 / scale);
+    g.minBorderX = EDGE_THRESHOLD - 3;
+    g.minBorderY = g.minBorderX;
+    g.maxBorderX = g.cols - EDGE_THRESHOLD + 3;
+    g.maxBorderY = g.rows - EDGE_THRESHOLD + 3;
 
-    const int x = blockIdx.x * blockDim.x + threadIdx.x + minBorderX + 3;
-    const int y = (blockIdx.y * blockDim.y + threadIdx.y) * 4 + minBorderY + 3;
-
-    const int h = maxBorderY - minBorderY;
-    const int w = maxBorderX - minBorderX;
-
-    const int imageStep = (level == 0) * inputImageStep + (level != 0) * new_cols;
-
-    const uchar* im[2] = {inputImage, &(images[(level*cols*rows)])};
-    const int imIndex = (level != 0);
-
-    const uchar *image = im[imIndex];
-
-    uint *size = &(sizes[level]);
-    ORB_SLAM3::GpuPoint *buffer = &(buffers[level*cols*rows]);
-
-    const uint maxKeypoints = w*h;
-
-    __shared__ bool hasKp;
-    if (tid == 0) {
-        hasKp = false;
-    }
-
-    bool isKp[4] = {0};
-    for (int t = 0; t < 4; ++t) {
-        if (y+t < maxBorderY - 3 && x < maxBorderX - 3 && level < maxLevel) {
-            const int score = isKeyPoint2(image, x, y+t, t_h, imageStep);
-            isKp[t] = score;
-            d_Rs[index(x, y+t, imageStep)] = score;
-        }
-    }
-    // barrieer
-    __syncthreads();
-    for (int t = 0; t < 4; ++t) {
-        if (isKp[t]) {
-            isKp[t] = false;
-            if (isMax(x, y+t, imageStep, d_Rs)) {
-                int score = d_Rs[index(x, y+t, imageStep)];
-                hasKp = true;
-                const unsigned int ind = atomicInc(size, maxKeypoints);
-                buffer[ind].x = x;
-                buffer[ind].y = y+t;
-                buffer[ind].score = score;
-            }
-        }
-    }
-    // barrieer
-    __syncthreads();
-    if (hasKp) return ;
-
-    // lower the threshold and try again
-    for (int t = 0; t < 4; ++t) {
-        if (y+t < maxBorderY - 3 && x < maxBorderX - 3 && y+t > minBorderY && x > minBorderX && level < maxLevel) {
-            const int score = isKeyPoint2(image, x, y+t, t_low, imageStep);
-            isKp[t] = score;
-            d_Rs[index(x, y+t, imageStep)] = score;
-        }
-    }
-    // barrieer
-    __syncthreads();
-    for (int t = 0; t < 4; ++t) {
-        if (isKp[t]) {
-            if (isMax(x, y+t, imageStep, d_Rs)) {
-                int score = d_Rs[index(x, y+t, imageStep)];
-                const unsigned int ind = atomicInc(size, maxKeypoints);
-                buffer[ind].x = x;
-                buffer[ind].y = y+t;
-                buffer[ind].score = score;
-            }
-        }
-    }
+    // const float W = 35 in ComputeKeyPointsOctTree.
+    const int width = g.maxBorderX - g.minBorderX;
+    const int height = g.maxBorderY - g.minBorderY;
+    g.nCols = width / 35;
+    g.nRows = height / 35;
+    g.wCell = g.nCols > 0 ? (width + g.nCols - 1) / g.nCols : width;
+    g.hCell = g.nRows > 0 ? (height + g.nRows - 1) / g.nRows : height;
+    return g;
 }
 
-//__global__
-//void fast_corner(uchar *images, uchar *inputImage, uint8_t *d_Rs, uint8_t *d_Rs_low, int rows, int cols, uint8_t t, uint8_t t_low, int *points, float *mvScaleFactor, int n_, int maxLevel, int inputImageStep){
-//    const int x = blockIdx.x * blockDim.x + threadIdx.x;
-//    const int y = blockIdx.y * blockDim.y + threadIdx.y;
-//    const int level = blockIdx.z * blockDim.z + threadIdx.z;
+// Pass 1: the FAST score of every pixel in the detection window, into that
+// level's own plane.
 //
-//    if (level >= maxLevel) {
-//        return;
-//    }
+// The score is the largest threshold at which the pixel is still a corner, so
+// it does not depend on which threshold was used to find it: a pixel is a corner
+// at threshold t exactly when its score is >= t. Computing it once at the low
+// threshold therefore serves both the initial and the fallback pass, and lets
+// non-maximum suppression run in a second kernel over a plane that is already
+// complete.
 //
-//    const float scale = mvScaleFactor[level];
-//    const int new_rows = round(rows * 1/scale);
-//    const int new_cols = round(cols * 1/scale);
-//    const int minBorderX = EDGE_THRESHOLD-3;
-//    const int minBorderY = minBorderX;
-//    const int maxBorderX = new_cols-EDGE_THRESHOLD+3;
-//    const int maxBorderY = new_rows-EDGE_THRESHOLD+3;
-//
-//    const int h = maxBorderY - minBorderY;
-//    const int w = maxBorderX - minBorderX;
-//
-//    if (x < 4 || x > (w-5) || y < 4 || y > (h-5))
-//        return;
-//
-//    const int imageStep = (level == 0) * inputImageStep + (level != 0) * new_cols;
-//    const int startingPoint = (minBorderY * imageStep) + minBorderX;
-//
-//    const int index = x + y * imageStep;//w;
-//    const int image_index = x + y * imageStep;
-//
-//    const uchar* im[2] = {&(inputImage[startingPoint]), &(images[(level*cols*rows)+startingPoint])};
-//    const int imIndex = (level != 0);
-//
-//    const uchar *image = im[imIndex];
-//
-//    const uchar p_index = image[image_index];
-//
-//    uint8_t *d_R = &(d_Rs[level*cols*rows]);
-//    uint8_t *d_R_low = &(d_Rs_low[level*cols*rows]);
-//
-//
-////    const int major = p_index + t;
-////    const int minor = p_index - t;
-////    uint8_t max_n_major = 0;
-////    uint8_t n_major = 0;
-////    uint8_t max_n_minor = 0;
-////    uint8_t n_minor = 0;
-////
-////    uint8_t score_major = 0;
-////    uint8_t score_minor = 0;
-////    uint8_t max_score_major = t;
-////    uint8_t max_score_minor = t;
-////
-////    const int major_low = p_index + t_low;
-////    const int minor_low = p_index - t_low;
-////    uint8_t max_n_major_low = 0;
-////    uint8_t n_major_low = 0;
-////    uint8_t max_n_minor_low = 0;
-////    uint8_t n_minor_low = 0;
-////
-////    uint8_t score_major_low = 0;
-////    uint8_t score_minor_low = 0;
-////    uint8_t max_score_major_low = t_low;
-////    uint8_t max_score_minor_low = t_low;
-//
-//    const int hKp = isKeyPoint2(image, x, y, t, imageStep);
-//    const int lKp = isKeyPoint2(image, x, y, t_low, imageStep);
-//
-////    #pragma unroll
-////    for(int i = 0; i < 24; i++){
-////        const uint8_t pt = (i%16)*2;
-////        const int xn = x + points[pt];
-////        const int yn = y + points[pt+1];
-////        const int id = xn + yn * imageStep;
-////
-////        uchar p_id = image[id];
-////
-////        n_major = uchar(p_id > major) * (n_major + 1);
-////        n_minor = uchar(p_id < minor) * (n_minor + 1);
-////        max_n_major = max(max_n_major, n_major);
-////        max_n_minor = max(max_n_minor, n_minor);
-////
-////
-////        score_major = (p_id > major) * (p_id - p_index);
-////        score_minor = (p_id < minor) * (p_index - p_id);
-////        max_score_major = max(max_score_major, score_major);
-////        max_score_minor = max(max_score_minor, score_minor);
-////
-////        //low thr
-////        n_major_low = uchar(p_id > major_low) * (n_major_low + 1);
-////        n_minor_low = uchar(p_id < minor_low) * (n_minor_low + 1);
-////        max_n_major_low = max(max_n_major_low, n_major_low);
-////        max_n_minor_low = max(max_n_minor_low, n_minor_low);
-////
-////
-////        score_major_low = (p_id > major_low) * (p_id - p_index);
-////        score_minor_low = (p_id < minor_low) * (p_index - p_id);
-////        max_score_major_low = max(max_score_major_low, score_major_low);
-////        max_score_minor_low = max(max_score_minor_low, score_minor_low);
-////
-////    }
-////    const uint8_t n = max(max_n_minor, max_n_major);
-////
-////    d_R[index] = (n >= n_) * ((max_n_major >= max_n_minor) * max_score_major + (max_n_major < max_n_minor) * max_score_minor);
-////
-////    const uint8_t n_low = max(max_n_minor_low, max_n_major_low);
-////
-////    d_R_low[index] = (n_low >= n_) * ((max_n_major_low >= max_n_minor_low) * max_score_major_low + (max_n_major_low < max_n_minor_low) * max_score_minor_low);
-//
-//    d_R[index] = hKp;
-//    d_R_low[index] = lKp;
-//}
-
-__global__
-void fast_choise(uint8_t *d_Rs, uint8_t *d_Rs_low, float *mvScaleFactor, int maxLevel, int rows, int cols) {
-    const int x = blockIdx.x * blockDim.x + threadIdx.x;
-    const int y = blockIdx.y * blockDim.y + threadIdx.y;
-    const int level = blockIdx.z * blockDim.z + threadIdx.z;
-
-    const float scale = mvScaleFactor[level];
-    const int new_rows = round(rows * 1/scale);
-    const int new_cols = round(cols * 1/scale);
-    const int minBorderX = EDGE_THRESHOLD-3;
-    const int minBorderY = minBorderX;
-    const int maxBorderX = new_cols-EDGE_THRESHOLD+3;
-    const int maxBorderY = new_rows-EDGE_THRESHOLD+3;
-
-    const int h = maxBorderY - minBorderY;
-    const int w = maxBorderX - minBorderX;
-
-    const int imageStep = new_cols;
-    const int index = x + y * imageStep;
-
-    uint8_t *d_R = &(d_Rs[level*cols*rows]);
-    uint8_t *d_R_low = &(d_Rs_low[level*cols*rows]);
-
-    __shared__ int found;
-    found = 0;
-    if (level < maxLevel && (x >= 4 && x <= (w-5) && y >= 4 && y <= (h-5))){
-        const int highFound = d_R[index];
-        if (highFound) {
-            found = 1;
-        }
-    }
-
-    __syncthreads();
-
-    if (level < maxLevel && (x >= 4 && x <= (w-5) && y >= 4 && y <= (h-5)) && !found){
-        d_R[index] = d_R_low[index];
-    }
-
-}
-
-__global__
-void interpolate(const uint8_t *d_Rs, int cols, int rows, ORB_SLAM3::GpuPoint *buffers, uint *sizes, float *mvScaleFactor, int maxLevel){
-    const int x = blockIdx.x * blockDim.x + threadIdx.x;
-    const int y = blockIdx.y * blockDim.y + threadIdx.y;
-    const int level = blockIdx.z * blockDim.z + threadIdx.z;
+// Previously the score lived in a single plane shared by all eight levels
+// (d_Rs was indexed by pixel only, never by level) and suppression read its
+// neighbours in the same kernel that wrote them, so a pixel's fate depended on
+// which level and which block got there first. That is what made extraction
+// non-repeatable.
+__global__ void fast_score(const uchar *images, const uchar *inputImage,
+                           uint8_t *scores, int rows, int cols, uint8_t t_low,
+                           const float *mvScaleFactor, int maxLevel,
+                           int inputImageStep) {
+    const int level = blockIdx.z;
     if (level >= maxLevel)
         return;
-    
-    const float scale = mvScaleFactor[level];
-    const int new_rows = round(rows * 1/scale);
-    const int new_cols = round(cols * 1/scale);
-    const int minBorderX = EDGE_THRESHOLD-3;
-    const int minBorderY = minBorderX;
-    const int maxBorderX = new_cols-EDGE_THRESHOLD+3;
-    const int maxBorderY = new_rows-EDGE_THRESHOLD+3;
 
-    const int h = maxBorderY - minBorderY;
-    const int w = maxBorderX - minBorderX;
+    const LevelGeometry g = levelGeometry(level, cols, rows, mvScaleFactor);
 
-    if (x < 4 || x > (w-5) || y < 4 || y > (h-5))
+    const int x = blockIdx.x * blockDim.x + threadIdx.x + g.minBorderX + 3;
+    const int y = (blockIdx.y * blockDim.y + threadIdx.y) * 4 + g.minBorderY + 3;
+    if (x >= g.maxBorderX - 3)
         return;
 
-    const int index = x + y * new_cols;//w;
-    const uint8_t *d_R = &(d_Rs[level*cols*rows]);
+    const int imageStep = level == 0 ? inputImageStep : g.cols;
+    const uchar *image = level == 0 ? inputImage : &images[level * cols * rows];
 
-    uint8_t val = d_R[index];
+    uint8_t *scorePlane = &scores[level * cols * rows];
 
-    if (val == 0)
-        return;
-
-    uint *size = &(sizes[level]);
-    ORB_SLAM3::GpuPoint *buffer = &(buffers[level*cols*rows]);
-
-    const int imageStep = new_cols;
-
-    int i = x-1 + (y-1) * imageStep;
-    val = (d_R[ i ] <= val) * val;//(val + (int)(d_R[ i ] == val));
-    i = x + (y-1) * imageStep;
-    val = (d_R[ i ] <= val) * val;//(val + (int)(d_R[ i ] == val));
-    i = x+1 + (y-1) * imageStep;
-    val = (d_R[ i ] <= val) * val;//(val + (int)(d_R[ i ] == val));
-    i = x-1 + (y) * imageStep;
-    val = (d_R[ i ] <= val) * val;//(val + (int)(d_R[ i ] == val));
-    i = x+1 + (y) * imageStep;
-    val = (d_R[ i ] <= val) * val;//(val + (int)(d_R[ i ] == val));
-    i = x-1 + (y+1) * imageStep;
-    val = (d_R[ i ] <= val) * val;//(val + (int)(d_R[ i ] == val));
-    i = x + (y+1) * imageStep;
-    val = (d_R[ i ] <= val) * val;//(val + (int)(d_R[ i ] == val));
-    i = x+1 + (y+1) * imageStep;
-    val = (d_R[ i ] <= val) * val;//(val + (int)(d_R[ i ] == val));
-
-    const uint dim = w*h;
-
-    if (val == 0)
-        return;
-
-    const uint id = atomicInc(size, dim);
-
-    buffer[id].x = x+minBorderX;
-    buffer[id].y = y+minBorderY;
-    buffer[id].score = val;
-
+    for (int t = 0; t < 4; ++t) {
+        if (y + t >= g.maxBorderY - 3)
+            break;
+        // Every pixel in the window is written, including the zeros, so nothing
+        // downstream can read a score left over from the previous frame.
+        scorePlane[index(x, y + t, g.cols)] =
+                (uint8_t)isKeyPoint2(image, x, y + t, t_low, imageStep);
+    }
 }
 
-void fast_extract( uchar *images, uchar *inputImage, uint8_t th, uint8_t th_low, uint8_t *d_Rs, uint8_t *d_Rs_low, int *points, int n_, ORB_SLAM3::GpuPoint *buffers, uint *sizes, int cols, int rows, int inputImageStep, float* mvScaleFactor, int maxLevel, cudaStream_t cudaStream, cudaEvent_t interComplete, cv::Mat pyramid){
-//    dim3 dg( ceil( (float)cols/16 ), ceil( (float)rows/8 ), ceil((float)maxLevel/4) );
-//    dim3 db( 16, 8, 4);
-//
-//    dim3 dg2( ceil( (float)cols/32 ), ceil( (float)rows/32 ), ceil((float)maxLevel) );
-//    dim3 db2( 32, 32, 1);
+// Non-maximum suppression restricted to the corners that pass `threshold`.
+// cv::FAST scores non-corners as 0, so a neighbour below the threshold cannot
+// suppress anything; and a neighbour outside the cell was never scored by the
+// CPU's per-cell FAST call, so it is masked out here too.
+__device__ __forceinline__ bool isLocalMax(const uint8_t *scorePlane, int step,
+                                           int x, int y, int score,
+                                           int threshold, int x0, int x1,
+                                           int y0, int y1) {
+    for (int dy = -1; dy <= 1; dy++) {
+        for (int dx = -1; dx <= 1; dx++) {
+            if (dx == 0 && dy == 0)
+                continue;
+            const int nx = x + dx, ny = y + dy;
+            if (nx < x0 || nx >= x1 || ny < y0 || ny >= y1)
+                continue;
+            const int n = scorePlane[index(nx, ny, step)];
+            if (n >= threshold && score <= n)
+                return false;
+        }
+    }
+    return true;
+}
 
-    dim3 dimBlock(32, 8, 1);
-    dim3 dimGrid(ceil((float)cols/dimBlock.x), ceil((float)rows/(dimBlock.y * 4)), maxLevel);
+// Pass 2: one block per cell of the CPU's cell grid. Emits the cell's corners at
+// the high threshold, or -- only if the cell has none -- at the low threshold,
+// which is what ComputeKeyPointsOctTree does with its two FAST calls per cell.
+__global__ void fast_nms(const uint8_t *scores, ORB_SLAM3::GpuPoint *buffers,
+                         uint *sizes, int rows, int cols, uint8_t t_h,
+                         uint8_t t_low, const float *mvScaleFactor,
+                         int maxLevel) {
+    const int level = blockIdx.z;
+    if (level >= maxLevel)
+        return;
 
-    cudaMemsetAsync(sizes, 0, sizeof(uint)*maxLevel, cudaStream);
+    const LevelGeometry g = levelGeometry(level, cols, rows, mvScaleFactor);
+    const int cellX = blockIdx.x, cellY = blockIdx.y;
+    if (cellX >= g.nCols || cellY >= g.nRows)
+        return;
 
-//    unsigned int *my_counter_d;
-//    unsigned int init = 0;
-//    cudaMalloc(&my_counter_d, sizeof(unsigned int));
-//    cudaMemcpy(my_counter_d, &init, sizeof(unsigned int), cudaMemcpyHostToDevice);
-    fast_corner<<<dimGrid, dimBlock, 0, cudaStream>>>(images, inputImage, d_Rs, buffers, rows, cols, th, th_low, sizes, mvScaleFactor, maxLevel, inputImageStep);
-//    cudaStreamSynchronize(cudaStream);
-//    unsigned int counter;
-//    cudaMemcpyAsync(&counter, sizes, sizeof(unsigned int), cudaMemcpyDeviceToHost, cudaStream);
-//    cudaStreamSynchronize(cudaStream);
-//    ORB_SLAM2::GpuPoint p[counter];
-//    cudaMemcpyAsync(p, buffers, sizeof(ORB_SLAM2::GpuPoint)*counter, cudaMemcpyDeviceToHost, cudaStream);
-//    cudaStreamSynchronize(cudaStream);
-//                struct {
-//                bool operator()(ORB_SLAM2::GpuPoint &a, ORB_SLAM2::GpuPoint &b) const {
-//                    if (a.x == b.x) {
-//                        return a.y < b.y;
-//                    }
-//                    return a.x < b.x;
-//                }
-//            } customLess;
-//            std::sort(p, p + counter, customLess);
-//    for (int i=0; i<counter; i++){
-//        std::cout << p[i].x << " " << p[i].y << std::endl;
-//    }
-//    std::cout << cudaGetErrorString(cudaGetLastError()) << std::endl;
-//    fast_corner<<< dg, db, 0, cudaStream >>>(images, inputImage, d_Rs, d_Rs_low, rows, cols, th, th_low, points, mvScaleFactor, n_, maxLevel, inputImageStep);
-//    fast_choise<<<dg2,db2,0,cudaStream>>>(d_Rs, d_Rs_low,mvScaleFactor,maxLevel,rows,cols);
-//    interpolate<<< dg, db, 0, cudaStream >>>(d_Rs_low, cols, rows, buffers, sizes, mvScaleFactor, maxLevel);
-    cudaEventRecord(interComplete, cudaStream);
+    // The cell rectangle, including the 6 pixel overlap with the next cell.
+    const int iniX = g.minBorderX + cellX * g.wCell;
+    const int iniY = g.minBorderY + cellY * g.hCell;
+    if (iniX >= g.maxBorderX - 6 || iniY >= g.maxBorderY - 3)
+        return;
+    const int maxX = min(iniX + g.wCell + 6, g.maxBorderX);
+    const int maxY = min(iniY + g.hCell + 6, g.maxBorderY);
+
+    // FAST cannot fire within 3 pixels of the sub-image it was handed.
+    const int x0 = iniX + 3, x1 = maxX - 3;
+    const int y0 = iniY + 3, y1 = maxY - 3;
+
+    const uint8_t *scorePlane = &scores[level * cols * rows];
+    uint *size = &sizes[level];
+    ORB_SLAM3::GpuPoint *buffer = &buffers[level * cols * rows];
+    const uint maxKeypoints = cols * rows;
+
+    const int tid = threadIdx.y * blockDim.x + threadIdx.x;
+    const int nThreads = blockDim.x * blockDim.y;
+
+    __shared__ int anyHigh;
+    if (tid == 0)
+        anyHigh = 0;
+    __syncthreads();
+
+    const int cellW = x1 - x0, cellH = y1 - y0;
+    const int nPixels = cellW > 0 && cellH > 0 ? cellW * cellH : 0;
+
+    for (int i = tid; i < nPixels; i += nThreads) {
+        const int x = x0 + i % cellW;
+        const int y = y0 + i / cellW;
+        const int score = scorePlane[index(x, y, g.cols)];
+        if (score >= t_h &&
+            isLocalMax(scorePlane, g.cols, x, y, score, t_h, x0, x1, y0, y1)) {
+            anyHigh = 1;
+            const uint ind = atomicInc(size, maxKeypoints);
+            buffer[ind].x = x;
+            buffer[ind].y = y;
+            buffer[ind].score = score;
+        }
+    }
+
+    __syncthreads();
+    if (anyHigh)
+        return;
+
+    for (int i = tid; i < nPixels; i += nThreads) {
+        const int x = x0 + i % cellW;
+        const int y = y0 + i / cellW;
+        const int score = scorePlane[index(x, y, g.cols)];
+        if (score >= t_low &&
+            isLocalMax(scorePlane, g.cols, x, y, score, t_low, x0, x1, y0, y1)) {
+            const uint ind = atomicInc(size, maxKeypoints);
+            buffer[ind].x = x;
+            buffer[ind].y = y;
+            buffer[ind].score = score;
+        }
+    }
+}
+
+void fast_extract(uchar *images, uchar *inputImage, uint8_t th, uint8_t th_low,
+                  uint8_t *scores, ORB_SLAM3::GpuPoint *buffers, uint *sizes,
+                  int cols, int rows, int inputImageStep, float *mvScaleFactor,
+                  int maxLevel, cudaStream_t cudaStream) {
+    cudaMemsetAsync(sizes, 0, sizeof(uint) * maxLevel, cudaStream);
+
+    dim3 scoreBlock(32, 8, 1);
+    dim3 scoreGrid(ceil((float)cols / scoreBlock.x),
+                   ceil((float)rows / (scoreBlock.y * 4)), maxLevel);
+    fast_score<<<scoreGrid, scoreBlock, 0, cudaStream>>>(
+            images, inputImage, scores, rows, cols, th_low, mvScaleFactor,
+            maxLevel, inputImageStep);
+
+    // Level 0 has the most cells; the smaller levels exit immediately.
+    const int maxCells = (cols - 2 * (EDGE_THRESHOLD - 3)) / 35 + 1;
+    dim3 nmsBlock(32, 8, 1);
+    dim3 nmsGrid(maxCells, maxCells, maxLevel);
+    fast_nms<<<nmsGrid, nmsBlock, 0, cudaStream>>>(scores, buffers, sizes, rows,
+                                                   cols, th, th_low,
+                                                   mvScaleFactor, maxLevel);
 }

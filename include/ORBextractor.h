@@ -148,6 +148,7 @@ public:
 protected:
 
     void ComputePyramid(cv::Mat image);
+    void buildResizeTables(int w, int h);
     void ComputePyramidGPU(cv::Mat image);
     void ComputeKeyPointsOctTree(std::vector<std::vector<cv::KeyPoint> >& allKeypoints);
     void ComputeKeyPointsOctTreeGPU(std::vector<std::vector<OrbKeyPoint> >& allKeypoints);  
@@ -177,8 +178,6 @@ protected:
     std::vector<float> mvInvLevelSigma2;
 
 
-    uint8_t n_ = 12;
-
     float maxScaleFactor;
     int allocatedSize;
     int allocatedInputSize;
@@ -192,14 +191,22 @@ protected:
     cudaStream_t cudaStreamBlur;
     cudaEvent_t resizeComplete;
     cudaEvent_t blurComplete;
-    cudaEvent_t interComplete;
 
     copyPyrimid_t copyPyrimidData;
 
     int *umax_gpu;
 
+    // One FAST score plane per pyramid level.
     uint8_t *d_R;
-    uint8_t *d_R_low;
+
+    // cv::resize interpolation tables, one set per level, and the level sizes
+    // they were built for.
+    std::vector<int> mvLevelCols;
+    std::vector<int> mvLevelRows;
+    int *d_resizeXofs;
+    int *d_resizeYofs;
+    short *d_resizeXalpha;
+    short *d_resizeYalpha;
 
     GpuPoint *corner_buffer;
     uint *corner_size;
@@ -210,7 +217,6 @@ protected:
     int *d_score;
     // int *score;
     
-    int *d_points;
     cv::Point *d_pattern;
 
     float *kernel;

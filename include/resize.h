@@ -13,6 +13,14 @@
 
 #include <opencv2/core/hal/interface.h>
 
-void resize(uint old_h, uint old_w, float *_scaleFactor, uchar *original_img, uchar *new_images, uint maxLevel, uint imageStep, cudaStream_t stream);
+// Interpolation tables for one axis of one level, in cv::resize's fixed-point
+// form: ofs[d] is the source index and alpha[2d], alpha[2d+1] the 11-bit
+// weights of that sample and its successor.
+void build_resize_tables(int srcLen, int dstLen, int *ofs, short *alpha);
+
+void resize(const uchar *inputImage, int inputImageStep, uchar *pyramid,
+            const int *levelCols, const int *levelRows, int maxLevel, int cols,
+            int rows, const int *d_xofs, const short *d_xalpha,
+            const int *d_yofs, const short *d_yalpha, cudaStream_t stream);
 
 #endif

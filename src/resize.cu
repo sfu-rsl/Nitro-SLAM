@@ -14,52 +14,105 @@
 
 #include "resize.h"
 
-#define index(x, y, step) (y * step + x)
-
-__global__ void resize_kernel(uint old_h, uint old_w, float *_scaleFactor, const uchar *original_img, uchar *new_images, uint maxLevel, uint imageStep) {
+// One pyramid level, resampled from the level above with the same arithmetic
+// cv::resize(..., INTER_LINEAR) uses: 11-bit fixed point weights, a 22-bit
+// descale, and the tables built by build_resize_tables().
+//
+// Two things here were wrong before and both moved every keypoint above level 0:
+// the level was sampled straight from level 0 rather than from level-1 (so a
+// level-7 pixel came from one bilinear tap on the full-resolution image instead
+// of seven successive halvings), and the sample point was x*scale instead of
+// OpenCV's (x+0.5)*scale-0.5, a half-pixel shift that grows with the level.
+__global__ void resize_level_kernel(const uchar *src, int srcStep, uchar *dst,
+                                    int dstRows, int dstCols, int dstStep,
+                                    const int *xofs, const short *xalpha,
+                                    const int *yofs, const short *yalpha) {
     const int x = blockIdx.x * blockDim.x + threadIdx.x;
     const int y = blockIdx.y * blockDim.y + threadIdx.y;
-    const int level = (blockIdx.z * blockDim.z + threadIdx.z);
-
-    if (level >= maxLevel){
+    if (x >= dstCols || y >= dstRows)
         return;
-    }
-        
 
-    const float scaleFactor = _scaleFactor[level];
-    const uint new_h = round(old_h * 1/scaleFactor);
-    const uint new_w = round(old_w * 1/scaleFactor);
-    if (x >= new_w || y >= new_h){
-        return;
-    }
-    
-    uchar *new_image = &(new_images[level*old_h*old_w]);
-    const uint newImageStep = new_w;
-    uchar *newPixel = &(new_image[index(x, y, newImageStep)]);
+    const int sx = xofs[x];
+    const int ax0 = xalpha[2 * x], ax1 = xalpha[2 * x + 1];
+    const int sy = yofs[y];
+    const int ay0 = yalpha[2 * y], ay1 = yalpha[2 * y + 1];
 
-    const float old_x = x * scaleFactor;
-    const float old_y = y * scaleFactor;
-    const int x_floor = floor(old_x);
-    const int x_ceil = min(old_w - 1, (int)ceil(old_x));
-    const int y_floor = floor(old_y);
-    const int y_ceil = min(old_h - 1, (int)ceil(old_y));
+    const uchar *row0 = src + sy * srcStep;
+    const uchar *row1 = row0 + srcStep;
 
-    const uchar v1 = original_img[index(x_floor, y_floor, imageStep)];
-    const uchar v2 = original_img[index(x_ceil, y_floor, imageStep)];
-    const uchar v3 = original_img[index(x_floor, y_ceil, imageStep)];
-    const uchar v4 = original_img[index(x_ceil, y_ceil, imageStep)];
+    // Horizontal pass, then OpenCV's VResizeLinear<uchar,...> vertical combine.
+    // The vertical step is not a plain 22-bit descale: it drops 4 bits off each
+    // row sum first, which rounds differently and is what cv::resize actually
+    // produces.
+    const int v0 = row0[sx] * ax0 + row0[sx + 1] * ax1;
+    const int v1 = row1[sx] * ax0 + row1[sx + 1] * ax1;
+    const int v = (((ay0 * (v0 >> 4)) >> 16) + ((ay1 * (v1 >> 4)) >> 16) + 2) >> 2;
 
-    const float q1 = (x_ceil != x_floor) ? (v1 * ((x_ceil - old_x)/(x_ceil-x_floor)) + v2 * ((old_x - x_floor)/(x_ceil-x_floor))) : (x_ceil == x_floor) * v1;
-    const float q2 = (x_ceil != x_floor) ? (v3 * ((x_ceil - old_x)/(x_ceil-x_floor)) + v4 * ((old_x - x_floor)/(x_ceil-x_floor))) : (x_ceil == x_floor) * v4;
-    const float q = (y_ceil != y_floor) ? (q1 * ((y_ceil - old_y)/(y_ceil-y_floor)) + q2 * ((old_y - y_floor)/(y_ceil-y_floor))) : (y_ceil == y_floor) * q1;
-
-    *newPixel = q;
+    dst[y * dstStep + x] = (uchar)v;
 }
 
+// Straight copy of the input into level 0 of the pyramid buffer, which the
+// higher levels and StereoMatchKernel both read from.
+__global__ void copy_level0_kernel(const uchar *src, int srcStep, uchar *dst,
+                                   int rows, int cols, int dstStep) {
+    const int x = blockIdx.x * blockDim.x + threadIdx.x;
+    const int y = blockIdx.y * blockDim.y + threadIdx.y;
+    if (x >= cols || y >= rows)
+        return;
+    dst[y * dstStep + x] = src[y * srcStep + x];
+}
 
-void resize(uint old_h, uint old_w, float *_scaleFactor, uchar *original_img, uchar *new_images, uint maxLevel, uint imageStep, cudaStream_t stream) {
-    dim3 dg( ceil( (float)old_w/128 ), ceil( (float)old_h/8 ), ceil( (float)maxLevel/1 ) );
-    dim3 db( 128, 8, 1 );
+// cv::resize's INTER_LINEAR tables, computed once per level because the image
+// size never changes during a run. Mirrors the coefficient setup in OpenCV's
+// resize.cpp so that a GPU level is bit-identical to the CPU one.
+void build_resize_tables(int srcLen, int dstLen, int *ofs, short *alpha) {
+    const double scale = (double)srcLen / (double)dstLen;
+    for (int d = 0; d < dstLen; d++) {
+        float f = (float)((d + 0.5) * scale - 0.5);
+        int s = (int)floorf(f);
+        f -= s;
 
-    resize_kernel<<<dg, db, 0, stream>>>(old_h, old_w, _scaleFactor, original_img, new_images, maxLevel, imageStep);
+        if (s < 0) {
+            s = 0;
+            f = 0.f;
+        }
+        if (s >= srcLen - 1) {
+            s = srcLen > 1 ? srcLen - 2 : 0;
+            f = 1.f;
+        }
+
+        ofs[d] = s;
+        // saturate_cast<short> rounds to nearest, and OpenCV rounds both
+        // coefficients independently rather than deriving one from the other.
+        alpha[2 * d] = (short)lrintf((1.f - f) * 2048.f);
+        alpha[2 * d + 1] = (short)lrintf(f * 2048.f);
+    }
+}
+
+void resize(const uchar *inputImage, int inputImageStep, uchar *pyramid,
+            const int *levelCols, const int *levelRows, int maxLevel, int cols,
+            int rows, const int *d_xofs, const short *d_xalpha,
+            const int *d_yofs, const short *d_yalpha, cudaStream_t stream) {
+    dim3 db(32, 8);
+
+    {
+        dim3 dg(ceil((float)levelCols[0] / db.x), ceil((float)levelRows[0] / db.y));
+        copy_level0_kernel<<<dg, db, 0, stream>>>(inputImage, inputImageStep,
+                                                  pyramid, levelRows[0],
+                                                  levelCols[0], levelCols[0]);
+    }
+
+    // Sequential by construction: level L reads the level L-1 the previous
+    // launch just wrote, exactly as ComputePyramid() does on the CPU.
+    for (int level = 1; level < maxLevel; level++) {
+        const uchar *src = pyramid + (level - 1) * rows * cols;
+        uchar *dst = pyramid + level * rows * cols;
+        dim3 dg(ceil((float)levelCols[level] / db.x),
+                ceil((float)levelRows[level] / db.y));
+        resize_level_kernel<<<dg, db, 0, stream>>>(
+                src, levelCols[level - 1], dst, levelRows[level],
+                levelCols[level], levelCols[level], d_xofs + level * cols,
+                d_xalpha + level * cols * 2, d_yofs + level * rows,
+                d_yalpha + level * rows * 2);
+    }
 }
