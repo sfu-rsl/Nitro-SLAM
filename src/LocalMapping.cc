@@ -158,12 +158,8 @@ void LocalMapping::Run()
 #endif  
 
             // Triangulate new MapPoints
-            if (MappingKernelController::searchForTriangulationOnGPU) {
-                if (MappingKernelController::useGPU2Pipeline)
-                    CreateNewMapPointsGPU2();
-                else
-                    CreateNewMapPointsGPU();
-            }
+            if (MappingKernelController::searchForTriangulationOnGPU)
+                CreateNewMapPointsGPU();
             else
                 CreateNewMapPoints();
 
@@ -893,102 +889,6 @@ void LocalMapping::CreateNewMapPoints()
 #endif
 }
 
-void LocalMapping::CreateNewMapPointsGPU2()
-{
-    // Neighbour selection is identical to CreateNewMapPoints.
-    int nn = 10;
-    if(mbMonocular)
-        nn=30;
-    vector<KeyFrame*> vpNeighKFs = mpCurrentKeyFrame->GetBestCovisibilityKeyFrames(nn);
-
-    if (mbInertial)
-    {
-        KeyFrame* pKF = mpCurrentKeyFrame;
-        int count=0;
-        while((vpNeighKFs.size()<=nn)&&(pKF->mPrevKF)&&(count++<nn))
-        {
-            vector<KeyFrame*>::iterator it = std::find(vpNeighKFs.begin(), vpNeighKFs.end(), pKF->mPrevKF);
-            if(it==vpNeighKFs.end())
-                vpNeighKFs.push_back(pKF->mPrevKF);
-            pKF = pKF->mPrevKF;
-        }
-    }
-
-    if (CheckNewKeyFrames())
-        return;
-
-    const float ratioFactor = 1.5f*mpCurrentKeyFrame->mfScaleFactor;
-    const bool bCoarse = mbInertial
-                      && mpTracker->mState == Tracking::RECENTLY_LOST
-                      && mpCurrentKeyFrame->GetMap()->GetIniertialBA2();
-
-    // Stage 1 - batched correspondence search. Also applies the baseline / median-depth
-    // neighbour filter and returns the survivors in covisibility order.
-    vector<vector<pair<size_t,size_t>>> allvMatchedIndices;
-    vector<size_t> vpNeighKFsIndexes;
-    MappingKernelController::launchTriangulationMatchKernel(
-        mpCurrentKeyFrame, vpNeighKFs, mbMonocular, bCoarse,
-        allvMatchedIndices, vpNeighKFsIndexes);
-
-    if (vpNeighKFsIndexes.empty())
-        return;
-
-    vector<KeyFrame*> kept;
-    kept.reserve(vpNeighKFsIndexes.size());
-    for (size_t i = 0; i < vpNeighKFsIndexes.size(); i++)
-        kept.push_back(vpNeighKFs[vpNeighKFsIndexes[i]]);
-
-    // Stage 2 - batched geometry. Every candidate's parallax, triangulation, cheirality,
-    // both reprojection tests and scale consistency are evaluated in parallel; survivors
-    // come back in (neighbour, idx1) order.
-    vector<MapPointCandidateKernel::Candidate> candidates;
-    MappingKernelController::launchMapPointCandidateKernel(
-        mpCurrentKeyFrame, kept, allvMatchedIndices,
-        mbInertial, mbFarPoints, mThFarPoints, ratioFactor, candidates);
-
-    // Stage 3 - serial by necessity: allocate MapPoints and wire the observation graph.
-    // Walking in covisibility order and skipping keypoints that already carry a MapPoint
-    // reproduces the CPU rule that the first matching neighbour claims a keypoint.
-    int num_created_mappoints = 0;
-    int lastSlot = -1;
-    for (size_t c = 0; c < candidates.size(); c++)
-    {
-        const MapPointCandidateKernel::Candidate &cd = candidates[c];
-
-        // Mirror the CPU's early abort between neighbours when work is queued.
-        if (cd.neighbourSlot != lastSlot) {
-            if (lastSlot >= 0 && CheckNewKeyFrames())
-                return;
-            lastSlot = cd.neighbourSlot;
-        }
-
-        if (mpCurrentKeyFrame->GetMapPoint(cd.idx1))
-            continue;
-
-        KeyFrame* pKF2 = kept[cd.neighbourSlot];
-        Eigen::Vector3f x3D(cd.x, cd.y, cd.z);
-
-        MapPoint* pMP = new MapPoint(x3D, mpCurrentKeyFrame, mpAtlas->GetCurrentMap());
-        num_created_mappoints += 1;
-
-        pMP->AddObservation(mpCurrentKeyFrame, cd.idx1);
-        pMP->AddObservation(pKF2, cd.idx2);
-
-        mpCurrentKeyFrame->AddMapPoint(pMP, cd.idx1);
-        pKF2->AddMapPoint(pMP, cd.idx2);
-
-        pMP->ComputeDistinctiveDescriptors();
-        pMP->UpdateNormalAndDepth();
-
-        mpAtlas->AddMapPoint(pMP);
-        mlpRecentAddedMapPoints.push_back(pMP);
-    }
-
-#ifdef REGISTER_LOCAL_MAPPING_STATS
-    LocalMappingStats::getInstance().createdMappoints_num.push_back(num_created_mappoints);
-#endif
-}
-
 void LocalMapping::CreateNewMapPointsGPU()
 {
     // Retrieve neighbor keyframes in covisibility graph
@@ -1052,19 +952,12 @@ void LocalMapping::CreateNewMapPointsGPU()
                       && mpTracker->mState == Tracking::RECENTLY_LOST
                       && mpCurrentKeyFrame->GetMap()->GetIniertialBA2();
 
-    if (MappingKernelController::useNewTriangulation) {
-        MappingKernelController::launchTriangulationMatchKernel(
-            mpCurrentKeyFrame, vpNeighKFs, mbMonocular, bCoarse,
-            allvMatchedIndices, vpNeighKFsIndexes
-        );
-    } else {
-        MappingKernelController::launchSearchForTriangulationKernel(
-            mpCurrentKeyFrame, vpNeighKFs, mbMonocular, mbInertial,
-            mpTracker->mState == Tracking::RECENTLY_LOST,
-            mpCurrentKeyFrame->GetMap()->GetIniertialBA2(),
-            allvMatchedIndices, vpNeighKFsIndexes
-        );
-    }
+    MappingKernelController::launchSearchForTriangulationKernel(
+        mpCurrentKeyFrame, vpNeighKFs, mbMonocular, mbInertial,
+        mpTracker->mState == Tracking::RECENTLY_LOST,
+        mpCurrentKeyFrame->GetMap()->GetIniertialBA2(),
+        allvMatchedIndices, vpNeighKFsIndexes
+    );
     for(size_t q=0; q<allvMatchedIndices.size(); q++) { g_triCallsGPU++; g_triMatchesGPU += allvMatchedIndices[q].size(); }
 
 #ifdef REGISTER_LOCAL_MAPPING_STATS

@@ -148,7 +148,7 @@ Because bit 4 is on-by-default behaviour rather than a kernel, the neutral FastT
 config is `00001`, not `00000`. `00000` is included separately as its own ablation
 (pose optimization disabled).
 
-### TurboMap — `kernel_status_TM`, 4-6 bits
+### TurboMap — `kernel_status_TM`, 4 bits
 
 | bit | name | effect when 1 |
 |---|---|---|
@@ -156,12 +156,12 @@ config is `00001`, not `00000`. `00000` is included separately as its own ablati
 | 1 | `fuse` | GPU `FuseKernel` |
 | 2 | `keyframeCulling` | `KeyFrameCullingOptimized()` instead of stock `KeyFrameCulling()` ([src/LocalMapping.cc:298](src/LocalMapping.cc#L298)) |
 | 3 | `LBA` | `OptimizerGPU::LocalInertialBA2` instead of `Optimizer::LocalInertialBA` ([src/LocalMapping.cc:239](src/LocalMapping.cc#L239)) |
-| 4 | `newTriangulation` | optional — `TriangulationMatchKernel` instead of `SearchForTriangulationKernel` |
-| 5 | `gpu2` | optional — `CreateNewMapPointsGPU2`, geometry on GPU too |
 
-Bits 4 and 5 only matter when bit 0 is set. They are excluded from the single-kernel
-sweep (prior measurement: all three GPU triangulation variants behave identically) and
-are covered in the follow-up section instead.
+There used to be a bit 4 (`newTriangulation`, selecting `TriangulationMatchKernel`) and a
+bit 5 (`gpu2`, selecting `CreateNewMapPointsGPU2` with the geometry on the GPU as well).
+All three GPU triangulation variants measured identically, so the two alternatives and
+their kernels were deleted on 2026-08-14 and `kernel_status_TM` is 4 bits again. Any
+longer status string is now ignored past the fourth character.
 
 ### FastLoop — `kernel_status_FL`, 6 bits
 
