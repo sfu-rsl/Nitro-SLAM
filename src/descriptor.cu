@@ -17,6 +17,12 @@
 
 // __device__ __constant__ int HALF_PATCH_SIZE_GPU;
 
+// A warp per keypoint, 4 warps per block: 128 keypoints per level in flight,
+// which covers a 512x512 TUM-VI level (under 700 corners on the busiest one) in
+// a handful of trips round the stride loop.
+#define DESCRIPTOR_THREADS 128
+#define DESCRIPTOR_BLOCKS_PER_LEVEL 32
+
 // BORDER_REFLECT_101, the border cv::copyMakeBorder puts around each level of
 // the CPU pyramid. The GPU pyramid has no border, and a rotated 31-pixel patch
 // reaches about 21 pixels from its centre while keypoints sit as close as 19 to
@@ -31,7 +37,12 @@ __device__ __forceinline__ int reflect101(int v, int len) {
     return v;
 }
 
-__device__ inline void comp_descr(const uchar *image, ORB_SLAM3::GpuPoint &pt, cv::Point *pattern, int imageStep, int cols, int rows) {
+// One warp per keypoint, one descriptor byte per lane. The 512 pattern lookups
+// of a descriptor are scattered single-byte reads, so a thread doing all of them
+// spends the kernel waiting on memory with nothing else to issue; splitting them
+// 32 ways puts 32x as many loads in flight for the same keypoint and turns the
+// 32 byte-stores into one coalesced write.
+__device__ inline void comp_descr_lane(const uchar *image, ORB_SLAM3::GpuPoint &pt, const cv::Point *pattern, int imageStep, int cols, int rows, int lane) {
         const float factorPI = (float)(CV_PI/180.f);
         const float angle = (float)pt.angle*factorPI;
         const float a = (float)cos(angle), b = (float)sin(angle);
@@ -39,47 +50,42 @@ __device__ inline void comp_descr(const uchar *image, ORB_SLAM3::GpuPoint &pt, c
         const int cx = (int)pt.x, cy = (int)pt.y;
         const int step = imageStep;
 
+        // Lane i owns descriptor byte i, which is the pattern's i-th group of 16.
+        pattern += lane * 16;
+
 #define GET_VALUE(idx) \
         image[reflect101(cy + (int)round(pattern[idx].x*b + pattern[idx].y*a), rows)*step + \
               reflect101(cx + (int)round(pattern[idx].x*a - pattern[idx].y*b), cols)]
 
-        #pragma unroll
-        for (int i = 0; i < 32; ++i, pattern += 16)
-        {
-            int t0, t1, val;
-            t0 = GET_VALUE(0); t1 = GET_VALUE(1);
-            val = t0 < t1;
-            t0 = GET_VALUE(2); t1 = GET_VALUE(3);
-            val |= (t0 < t1) << 1;
-            t0 = GET_VALUE(4); t1 = GET_VALUE(5);
-            val |= (t0 < t1) << 2;
-            t0 = GET_VALUE(6); t1 = GET_VALUE(7);
-            val |= (t0 < t1) << 3;
-            t0 = GET_VALUE(8); t1 = GET_VALUE(9);
-            val |= (t0 < t1) << 4;
-            t0 = GET_VALUE(10); t1 = GET_VALUE(11);
-            val |= (t0 < t1) << 5;
-            t0 = GET_VALUE(12); t1 = GET_VALUE(13);
-            val |= (t0 < t1) << 6;
-            t0 = GET_VALUE(14); t1 = GET_VALUE(15);
-            val |= (t0 < t1) << 7;
+        int t0, t1, val;
+        t0 = GET_VALUE(0); t1 = GET_VALUE(1);
+        val = t0 < t1;
+        t0 = GET_VALUE(2); t1 = GET_VALUE(3);
+        val |= (t0 < t1) << 1;
+        t0 = GET_VALUE(4); t1 = GET_VALUE(5);
+        val |= (t0 < t1) << 2;
+        t0 = GET_VALUE(6); t1 = GET_VALUE(7);
+        val |= (t0 < t1) << 3;
+        t0 = GET_VALUE(8); t1 = GET_VALUE(9);
+        val |= (t0 < t1) << 4;
+        t0 = GET_VALUE(10); t1 = GET_VALUE(11);
+        val |= (t0 < t1) << 5;
+        t0 = GET_VALUE(12); t1 = GET_VALUE(13);
+        val |= (t0 < t1) << 6;
+        t0 = GET_VALUE(14); t1 = GET_VALUE(15);
+        val |= (t0 < t1) << 7;
 
-            pt.descriptor[i] = (uchar)val;
-        }
+        pt.descriptor[lane] = (uchar)val;
 
 #undef GET_VALUE
-    }    
+    }
 
 __global__ void compute_descriptor_kernel(uchar *images, uchar *inputImage, ORB_SLAM3::GpuPoint *pointsTotal, const uint *sizes, cv::Point* pattern, int inputImageStep, int maxLevel, const float *mvScaleFactor, int cols, int rows) {
-    const int index = blockIdx.x * blockDim.x + threadIdx.x;
-    const int level = blockIdx.y * blockDim.y + threadIdx.y;
+    const int level = blockIdx.y;
     if (level >= maxLevel)
         return;
-    
+
     const uint n = sizes[level];
-    if (index >= n) {
-        return;
-    }
 
     ORB_SLAM3::GpuPoint *points = &(pointsTotal[level*cols*rows]);
 
@@ -93,19 +99,26 @@ __global__ void compute_descriptor_kernel(uchar *images, uchar *inputImage, ORB_
 
     const uchar *myImagePyrimid = im[imIndex];
 
-    comp_descr(myImagePyrimid, points[index], pattern, imageStep, new_cols, new_rows);
-
-//    printf("level: %d, index: %d\t%d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d\n", level, index,
-//           points[index].descriptor[0], points[index].descriptor[1], points[index].descriptor[2], points[index].descriptor[3], points[index].descriptor[4], points[index].descriptor[5], points[index].descriptor[6], points[index].descriptor[7], points[index].descriptor[8], points[index].descriptor[9], points[index].descriptor[10], points[index].descriptor[11], points[index].descriptor[12], points[index].descriptor[13], points[index].descriptor[14], points[index].descriptor[15], points[index].descriptor[16], points[index].descriptor[17], points[index].descriptor[18], points[index].descriptor[19], points[index].descriptor[20], points[index].descriptor[21], points[index].descriptor[22], points[index].descriptor[23], points[index].descriptor[24], points[index].descriptor[25], points[index].descriptor[26], points[index].descriptor[27], points[index].descriptor[28], points[index].descriptor[29], points[index].descriptor[30], points[index].descriptor[31]);
-
-//    points[index].x *= scale;
-//    points[index].y *= scale;
-
+    const int lane = threadIdx.x & 31;
+    const int warp = threadIdx.x >> 5;
+    const uint warpsPerBlock = blockDim.x >> 5;
+    const uint stride = gridDim.x * warpsPerBlock;
+    for (uint index = blockIdx.x * warpsPerBlock + warp; index < n;
+         index += stride)
+        comp_descr_lane(myImagePyrimid, points[index], pattern, imageStep,
+                        new_cols, new_rows, lane);
 }
 
 void compute_descriptor(uchar *images, uchar *inputImage, ORB_SLAM3::GpuPoint *points, uint *sizes, int maxPointsLevel, cv::Point* pattern, int inputImageStep, int maxLevel, int cols, int rows, float *mvScaleFactor, cudaStream_t cudaStream){
-    dim3 dg( ceil( (float)maxPointsLevel/128 ), ceil((float)maxLevel/8) );
-    dim3 db( 128, 8 );
+    // One block row per level, sized to a normal frame's corner count rather
+    // than to the buffer: `maxPointsLevel` is the buffer capacity (cols*rows),
+    // and using it as the grid bound launched 2.1M threads per frame so that
+    // ~1.7k of them could find a corner and the rest could read sizes[] and
+    // exit. That launch cost more than every descriptor in the frame. The
+    // counts only exist on the device at this point, so the surplus is handled
+    // by a stride loop instead of by the grid.
+    dim3 dg(DESCRIPTOR_BLOCKS_PER_LEVEL, maxLevel);
+    dim3 db(DESCRIPTOR_THREADS, 1);
 
     compute_descriptor_kernel<<<dg, db, 0, cudaStream>>>(images, inputImage, points, sizes, pattern, inputImageStep, maxLevel, mvScaleFactor, cols, rows);
 }

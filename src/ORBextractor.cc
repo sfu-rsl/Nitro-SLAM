@@ -58,6 +58,8 @@
 #include <opencv2/imgproc/imgproc.hpp>
 #include <vector>
 #include <iostream>
+#include <chrono>
+#include <cstdlib>
 
 #include <cuda.h>
 #include <cuda_runtime.h>
@@ -78,6 +80,34 @@ using namespace std;
 
 namespace ORB_SLAM3
 {
+
+    // Per-phase timing of the GPU extraction path, off unless NITRO_ORB_PROFILE
+    // is set. One CSV row per frame on stderr; the header names the phases.
+    // Cheap enough to leave compiled in -- the flag is read once and the
+    // timestamps are only taken when it is on.
+    namespace {
+        struct OrbProfile {
+            bool on;
+            bool headerDone;
+            std::chrono::steady_clock::time_point t[10];
+            int n;
+            double distributeMs;
+            unsigned rawCorners;
+
+            OrbProfile() : on(getenv("NITRO_ORB_PROFILE") != nullptr),
+                           headerDone(false), n(0), distributeMs(0),
+                           rawCorners(0) {}
+
+            inline void mark() {
+                if (on && n < 10)
+                    t[n++] = std::chrono::steady_clock::now();
+            }
+            inline double ms(int a, int b) const {
+                return std::chrono::duration<double, std::milli>(t[b] - t[a]).count();
+            }
+        };
+        thread_local OrbProfile orbProfile;
+    }
 
     static float IC_Angle(const Mat& image, Point2f pt,  const vector<int> & u_max)
     {
@@ -167,19 +197,22 @@ namespace ORB_SLAM3
         // descriptors are quantised against a vocabulary trained on that blur, so an
         // effective sigma that differs here shifts every descriptor's bit statistics.
         // Both the exponent and the normaliser take sigma^2, not sigma.
+        //
+        // Only the 1-D kernel is built: exp(-(h*h + w*w)/2s^2) is
+        // exp(-h*h/2s^2)*exp(-w*w/2s^2), and normalising each factor by the 1-D
+        // sum normalises the outer product by the 2-D sum, so K1 (x) K1 is the
+        // 2-D kernel exactly. The blur runs it as two 7-tap passes.
         const double variance = (double)SIGMA * (double)SIGMA;
 
         double sum = 0.0;
-        for (int h = -KH/2; h<=KH/2; h++) {
-            for (int w = -KW/2; w<=KW/2; w++) {
-                const double v = exp(-((double)(h*h + w*w)) / (2.0 * variance));
-                K[(h + KH/2) * KW + (w + KW/2)] = (float)v;
-                sum += v;
-            }
+        for (int w = -KW/2; w<=KW/2; w++) {
+            const double v = exp(-((double)(w*w)) / (2.0 * variance));
+            K[w + KW/2] = (float)v;
+            sum += v;
         }
 
         // Normalise so the blur preserves intensity, as cv::GaussianBlur does.
-        for (int i = 0; i < KW*KH; i++)
+        for (int i = 0; i < KW; i++)
             K[i] = (float)(K[i] / sum);
     }
 
@@ -483,10 +516,10 @@ namespace ORB_SLAM3
             checkCudaError(cudaMalloc(&d_corner_size, sizeof(uint)*nlevels), "[ORBextractor::] Failed to allocate memory for d_corner_size");
             checkCudaError(cudaMallocHost(&corner_size, sizeof(uint)*nlevels), "[ORBextractor::] Failed to allocate host memory for corner_size");
 
-            float k[KW*KH];
+            float k[KW];
             generateGaussian(k);
-            checkCudaError(cudaMalloc(&(kernel), sizeof(float)*KW*KH), "[ORBextractor::] Failed to allocate host memory for kernel");
-            checkCudaError(cudaMemcpy(kernel, k, sizeof(float)*KW*KH, cudaMemcpyHostToDevice), "[ORBextractor::] Failed to copy kernel");
+            checkCudaError(cudaMalloc(&(kernel), sizeof(float)*KW), "[ORBextractor::] Failed to allocate host memory for kernel");
+            checkCudaError(cudaMemcpy(kernel, k, sizeof(float)*KW, cudaMemcpyHostToDevice), "[ORBextractor::] Failed to copy kernel");
         }
 
         mvInvScaleFactor.resize(nlevels);
@@ -646,15 +679,15 @@ namespace ORB_SLAM3
         //Associate points to childs
         for(size_t i=0;i<vKeys.size();i++)
         {
-            const OrbKeyPoint &kp = vKeys[i];
-            if(kp.point.pt.x<n1.UR.x)
+            const OrbKeyPoint *kp = vKeys[i];
+            if(kp->point.pt.x<n1.UR.x)
             {
-                if(kp.point.pt.y<n1.BR.y)
+                if(kp->point.pt.y<n1.BR.y)
                     n1.vKeys.push_back(kp);
                 else
                     n3.vKeys.push_back(kp);
             }
-            else if(kp.point.pt.y<n1.BR.y)
+            else if(kp->point.pt.y<n1.BR.y)
                 n2.vKeys.push_back(kp);
             else
                 n4.vKeys.push_back(kp);
@@ -960,7 +993,7 @@ namespace ORB_SLAM3
         for(size_t i=0;i<vToDistributeKeys.size();i++)
         {
             const OrbKeyPoint &kp = vToDistributeKeys[i];
-            vpIniNodes[kp.point.pt.x/hX]->vKeys.push_back(kp);
+            vpIniNodes[kp.point.pt.x/hX]->vKeys.push_back(&kp);
         }
 
         list<ExtractorNodeGPU>::iterator lit = lNodes.begin();
@@ -1133,21 +1166,36 @@ namespace ORB_SLAM3
             }
         }
 
-        // Retain the best point in each node
+        // Retain the best point in each node.
+        //
+        // The CPU path takes the *first* keypoint of maximal response, which is
+        // well defined for it because cv::FAST hands it corners in raster order.
+        // The GPU appends through an atomic counter, so its order depends on how
+        // the blocks interleaved and "first" would vary between two extractions
+        // of the same image. Breaking the tie on position instead makes the pick
+        // independent of arrival order and identical to the CPU's, without
+        // having to sort the corner buffer to get there.
         vector<OrbKeyPoint> vResultKeys;
         vResultKeys.reserve(nfeatures);
         for(list<ExtractorNodeGPU>::iterator lit=lNodes.begin(); lit!=lNodes.end(); lit++)
         {
-            vector<OrbKeyPoint> &vNodeKeys = lit->vKeys;
-            OrbKeyPoint* pKP = &vNodeKeys[0];
+            vector<const OrbKeyPoint *> &vNodeKeys = lit->vKeys;
+            const OrbKeyPoint* pKP = vNodeKeys[0];
             float maxResponse = pKP->point.response;
 
             for(size_t k=1;k<vNodeKeys.size();k++)
             {
-                if(vNodeKeys[k].point.response>maxResponse)
+                const cv::KeyPoint &cand = vNodeKeys[k]->point;
+                if(cand.response>maxResponse)
                 {
-                    pKP = &vNodeKeys[k];
-                    maxResponse = vNodeKeys[k].point.response;
+                    pKP = vNodeKeys[k];
+                    maxResponse = cand.response;
+                }
+                else if(cand.response==maxResponse &&
+                        (cand.pt.y != pKP->point.pt.y ? cand.pt.y < pKP->point.pt.y
+                                                      : cand.pt.x < pKP->point.pt.x))
+                {
+                    pKP = vNodeKeys[k];
                 }
             }
 
@@ -1285,18 +1333,22 @@ namespace ORB_SLAM3
         uint corner_size[nlevels];
         cudaMemcpyAsync(corner_size, this->d_corner_size, sizeof(uint)*nlevels, cudaMemcpyDeviceToHost, cudaStream);
         cudaStreamSynchronize(cudaStream);
+        orbProfile.mark();
 
         for (int level = 0; level < nlevels; ++level){
             uint size = corner_size[level];
+            orbProfile.rawCorners += size;
             ORB_SLAM3::GpuPoint *corner_buffer = &(this->corner_buffer[level*rows*cols]);
             ORB_SLAM3::GpuPoint *d_corner_buffer = &(this->d_corner_buffer[level*rows*cols]);
             cudaMemcpyAsync(corner_buffer, d_corner_buffer, sizeof(GpuPoint)*size, cudaMemcpyDeviceToHost, cudaStream);
         }
         cudaStreamSynchronize(cudaStream);
+        orbProfile.mark();
         // The pyramid copy-back runs on its own stream. Callers read
         // mvImagePyramid straight after extraction (Frame::ComputeStereoMatches
         // does), so it has to be finished before this returns.
         cudaStreamSynchronize(cudaStreamCpy);
+        orbProfile.mark();
 
         const int minBorderX = EDGE_THRESHOLD-3;
         const int minBorderY = minBorderX;
@@ -1304,8 +1356,6 @@ namespace ORB_SLAM3
         for (int level = 0; level < nlevels; ++level)
         {
             vector<OrbKeyPoint> vToDistributeKeys;
-            vToDistributeKeys.reserve(nfeatures*10);
-
             float scale = mvScaleFactor[level];
             int new_rows = round(rows * 1/scale);
             int new_cols = round(cols * 1/scale);
@@ -1315,6 +1365,11 @@ namespace ORB_SLAM3
             uint size = corner_size[level];
             ORB_SLAM3::GpuPoint *corner_buffer = &(this->corner_buffer[level*rows*cols]);
 
+            // The detector's own count, not nfeatures*10: a level yields a few
+            // hundred corners, and reserving 10000 OrbKeyPoints per level meant
+            // 3 MB of allocate-and-release per frame for nothing.
+            vToDistributeKeys.reserve(size);
+
             // The GPU emits absolute coordinates (fast.cu adds minBorderX+3), but
             // DistributeOctTree bins keypoints against a tree rooted at 0, so the CPU
             // path feeds it ROI-relative coordinates and adds the border back
@@ -1322,15 +1377,11 @@ namespace ORB_SLAM3
             // lands at a different place in the image and a different subset of
             // keypoints survives. The border is restored after distribution - the
             // descriptors were computed against the absolute coordinates.
-            // The kernel appends through an atomic counter, so the buffer order
-            // depends on how the blocks interleave. DistributeOctTree keeps the
-            // first keypoint of maximal response in each node, which makes that
-            // order observable in the output; sorting by position pins it.
-            std::sort(corner_buffer, corner_buffer + size,
-                      [](const GpuPoint &a, const GpuPoint &b) {
-                          return a.y != b.y ? a.y < b.y : a.x < b.x;
-                      });
-
+            //
+            // The buffer arrives in the order the NMS blocks happened to append
+            // in, which varies between runs. Nothing downstream depends on that
+            // order any more: DistributeOctTreeGPU breaks its response ties on
+            // position, so the buffer no longer has to be sorted here.
             for(uint i=0; i<size; i++)
             {
                 // cout << size << " " << i << endl;
@@ -1349,8 +1400,12 @@ namespace ORB_SLAM3
             vector<OrbKeyPoint> & keypoints = allKeypoints[level];
             keypoints.reserve(nfeatures);
 
+            const auto tDist0 = std::chrono::steady_clock::now();
             keypoints = DistributeOctTreeGPU(vToDistributeKeys, minBorderX, maxBorderX,
                                              minBorderY, maxBorderY,mnFeaturesPerLevel[level], level);
+            if (orbProfile.on)
+                orbProfile.distributeMs += std::chrono::duration<double, std::milli>(
+                        std::chrono::steady_clock::now() - tDist0).count();
 
             // Restore absolute coordinates, as the CPU path does after distributing.
             for(size_t i=0; i<keypoints.size(); i++)
@@ -1384,6 +1439,7 @@ namespace ORB_SLAM3
 
         checkCudaError(cudaFree(d_images), "[ORBextractor::] Failed to free d_images");
         checkCudaError(cudaFree(d_imagesBlured), "[ORBextractor::] Failed to free d_imagesBlured");
+        checkCudaError(cudaFree(d_blurTmp), "[ORBextractor::] Failed to free d_blurTmp");
         checkCudaError(cudaFreeHost(outputImages), "[ORBextractor::] Failed to free outputImages");
 
         this->allocatedSize = 0;
@@ -1406,6 +1462,7 @@ namespace ORB_SLAM3
 
         checkCudaError(cudaMalloc(&d_images, sizeof(uchar)*w*h*nlevels), "[ORBextractor::] Failed to allocate memory for d_images");
         checkCudaError(cudaMalloc(&d_imagesBlured, sizeof(uchar)*w*h*nlevels), "[ORBextractor::] Failed to allocate memory for d_imagesBlured");
+        checkCudaError(cudaMalloc(&d_blurTmp, sizeof(float)*w*h*nlevels), "[ORBextractor::] Failed to allocate memory for d_blurTmp");
         checkCudaError(cudaMallocHost(&outputImages, sizeof(uchar)*w*h*nlevels), "[ORBextractor::] Failed to allocate memory for outputImages");
 
         this->allocatedSize = w*h; 
@@ -1483,9 +1540,16 @@ namespace ORB_SLAM3
         if (TrackingKernelController::orbExtractionKernelRunStatus == 1) {
             // this->checkAndReallocMemory(image);
 
+            orbProfile.n = 0;
+            orbProfile.distributeMs = 0.0;
+            orbProfile.rawCorners = 0;
+            orbProfile.mark();
+
             // Pre-compute the scale pyramid
             ComputePyramidGPU(image);
+            orbProfile.mark();
             ComputeKeyPointsOctTreeGPU(allKeypointsGPU);
+            orbProfile.mark();
 
             for (int level = 0; level < nlevels; ++level)
                 nkeypoints += (int)allKeypointsGPU[level].size();
@@ -1528,27 +1592,23 @@ namespace ORB_SLAM3
                 offset += nkeypointsLevel;
 
                 float scale = mvScaleFactor[level]; //getScale(level, firstLevel, scaleFactor);
-                int i = 0;
                 for (vector<OrbKeyPoint>::iterator keypoint = keypoints.begin(),
                             keypointEnd = keypoints.end(); keypoint != keypointEnd; ++keypoint){
-                    cv::Mat desc(1, 32, CV_8U, (*keypoint).descriptor);
-
                     // Scale keypoint coordinates
                     if (level != 0){
                         keypoint->point.pt *= scale;
                     }
 
-                    if(keypoint->point.pt.x >= vLappingArea[0] && keypoint->point.pt.x <= vLappingArea[1]){
-                        _keypoints.at(stereoIndex) = (*keypoint).point;
-                        desc.row(0).copyTo(descriptors.row(stereoIndex));
-                        stereoIndex--;
-                    }
-                    else{
-                        _keypoints.at(monoIndex) = (*keypoint).point;
-                        desc.row(0).copyTo(descriptors.row(monoIndex));
-                        monoIndex++;
-                    }
-                    i++;
+                    // A descriptor is 32 contiguous bytes in the pinned corner
+                    // buffer and 32 contiguous bytes in the output row, so it is
+                    // a memcpy; building a 1x32 cv::Mat header per keypoint to
+                    // say so cost more than the copy.
+                    const int row = (keypoint->point.pt.x >= vLappingArea[0] &&
+                                     keypoint->point.pt.x <= vLappingArea[1])
+                                            ? stereoIndex--
+                                            : monoIndex++;
+                    _keypoints.at(row) = keypoint->point;
+                    memcpy(descriptors.ptr<uchar>(row), keypoint->descriptor, 32);
                 }
             }
         }
@@ -1597,6 +1657,22 @@ namespace ORB_SLAM3
             }
         }
 
+        if (orbProfile.on && TrackingKernelController::orbExtractionKernelRunStatus == 1) {
+            orbProfile.mark();  // t6: output assembly done
+            if (!orbProfile.headerDone) {
+                fprintf(stderr, "total,launch,kernels,cornerD2H,pyrSync,octree,"
+                                "distribute,output,rawCorners,keypoints\n");
+                orbProfile.headerDone = true;
+            }
+            // octree = the whole host loop over levels; distribute is the part
+            // of it spent inside DistributeOctTreeGPU.
+            fprintf(stderr, "%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%u,%d\n",
+                    orbProfile.ms(0, 6), orbProfile.ms(0, 1), orbProfile.ms(1, 2),
+                    orbProfile.ms(2, 3), orbProfile.ms(3, 4), orbProfile.ms(4, 5),
+                    orbProfile.distributeMs, orbProfile.ms(5, 6),
+                    orbProfile.rawCorners, nkeypoints);
+        }
+
         // cout << "[ORBextractor]: extracted " << _keypoints.size() << " KeyPoints" << endl;
         return monoIndex;
     }
@@ -1638,7 +1714,7 @@ namespace ORB_SLAM3
 
         //BLUR
         checkCudaError(cudaStreamWaitEvent(cudaStreamBlur, resizeComplete, 0),"[ORBextractor::] Failed to wait for stream cudaStreamBlur");
-        gaussian_blur(d_images, d_inputImage, d_imagesBlured, d_inputImageBlured, kernel, cols, rows, imageStep, d_scaleFactor, nlevels, cudaStreamBlur);
+        gaussian_blur(d_images, d_inputImage, d_imagesBlured, d_inputImageBlured, kernel, d_blurTmp, cols, rows, imageStep, d_scaleFactor, nlevels, cudaStreamBlur);
         checkCudaError(cudaEventRecord(blurComplete, cudaStreamBlur),"[ORBextractor::] Failed to record event blurComplete");
 
         checkCudaError(cudaStreamWaitEvent(cudaStreamCpy, resizeComplete, 0),"[ORBextractor::] Failed to wait for stream cudaStreamCpy");

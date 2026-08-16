@@ -517,3 +517,7 @@ target_link_libraries(test_normalize_rotation ${PROJECT_NAME})
 add_executable(test_orb_extraction
         Examples/Tests/test_orb_extraction.cc)
 target_link_libraries(test_orb_extraction ${PROJECT_NAME})
+
+add_executable(bench_orb_extraction
+        Examples/Tests/bench_orb_extraction.cc)
+target_link_libraries(bench_orb_extraction ${PROJECT_NAME})

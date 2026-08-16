@@ -17,6 +17,11 @@
 
 // __device__ __constant__ int HALF_PATCH_SIZE_GPU;
 
+// Matches descriptor.cu: enough threads for a normal frame's corners, with a
+// stride loop for anything above that.
+#define ORIENTATION_THREADS 128
+#define ORIENTATION_BLOCKS_PER_LEVEL 16
+
 __device__ inline float ic_angle_gpu(const uchar *image, int x, int y, int *u_max, int imageStep) {
     int m_01 = 0, m_10 = 0;
 
@@ -54,15 +59,11 @@ __device__ inline float ic_angle_gpu(const uchar *image, int x, int y, int *u_ma
 }
 
 __global__ void compute_orientation_kernel(const uchar *images, const uchar *inputImage, ORB_SLAM3::GpuPoint *pointsTotal, const uint *sizes, int* umax, int inputImageStep, int maxLevel, const float *mvScaleFactor, int cols, int rows) {
-    const int index = blockIdx.x * blockDim.x + threadIdx.x;
-    const int level = blockIdx.y * blockDim.y + threadIdx.y;
+    const int level = blockIdx.y;
     if (level >= maxLevel)
         return;
-    
+
     const uint n = sizes[level];
-    if (index >= n) {
-        return;
-    }
 
     ORB_SLAM3::GpuPoint *points = &(pointsTotal[level*cols*rows]);
 
@@ -76,19 +77,32 @@ __global__ void compute_orientation_kernel(const uchar *images, const uchar *inp
     const uchar *myImagePyrimid = im[imIndex];
 
     const int scaledPatchSize = PATCH_SIZE*mvScaleFactor[level];
-    
-    const int x = points[index].x;
-    const int y = points[index].y;
-    const float angle = ic_angle_gpu(myImagePyrimid, x, y, umax, imageStep);
-    points[index].angle = angle;
-    points[index].octave = level;
-    points[index].size = scaledPatchSize;
 
+    // umax is 16 ints read by every thread on every patch row; a copy in shared
+    // memory keeps that off the L1 path.
+    __shared__ int umaxShared[HALF_PATCH_SIZE + 1];
+    for (int i = threadIdx.x; i <= HALF_PATCH_SIZE; i += blockDim.x)
+        umaxShared[i] = umax[i];
+    __syncthreads();
+
+    const uint stride = gridDim.x * blockDim.x;
+    for (uint index = blockIdx.x * blockDim.x + threadIdx.x; index < n;
+         index += stride) {
+        const int x = points[index].x;
+        const int y = points[index].y;
+        const float angle = ic_angle_gpu(myImagePyrimid, x, y, umaxShared, imageStep);
+        points[index].angle = angle;
+        points[index].octave = level;
+        points[index].size = scaledPatchSize;
+    }
 }
 
 void compute_orientation(uchar *images, uchar *inputImage, ORB_SLAM3::GpuPoint *points, uint *sizes, int maxPointsLevel, int* umax, int inputImageStep, int maxLevel, int cols, int rows, float *mvScaleFactor, cudaStream_t cudaStream){
-    dim3 dg( ceil( (float)maxPointsLevel/128 ), ceil((float)maxLevel/8) );
-    dim3 db( 128, 8 );
+    // See compute_descriptor: `maxPointsLevel` is the buffer capacity, not the
+    // corner count, so sizing the grid by it launched a thread per pixel per
+    // level to do ~1.7k threads' work.
+    dim3 dg(ORIENTATION_BLOCKS_PER_LEVEL, maxLevel);
+    dim3 db(ORIENTATION_THREADS, 1);
 
     compute_orientation_kernel<<<dg, db, 0, cudaStream>>>(images, inputImage, points, sizes, umax, inputImageStep, maxLevel, mvScaleFactor, cols, rows);
 }

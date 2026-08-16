@@ -225,6 +225,15 @@ int main(int argc, char **argv)
     size_t num_tracked = 0;
     double track_total = 0.0;
 
+    // Playback is normally paced to the dataset timestamps, so tracking faster than
+    // real time just buys idle sleep. Set NITRO_NO_PACING=1 to feed frames as fast as
+    // they can be read, which measures throughput -- and stresses the mapping and loop
+    // closing threads, which get no more wall clock than tracking leaves them.
+    const bool bNoPacing = (getenv("NITRO_NO_PACING") != nullptr);
+    if (bNoPacing)
+        std::cout << "NITRO_NO_PACING set: feeding frames unpaced" << std::endl;
+    const std::chrono::steady_clock::time_point wall_start = std::chrono::steady_clock::now();
+
     for (seq = 0; seq<num_seq; seq++)
     {
 
@@ -340,7 +349,7 @@ int main(int argc, char **argv)
             else if(ni>0)
                 T = tframe-vTimestampsCam[seq][ni-1];
 
-            if(ttrack<T)
+            if(!bNoPacing && ttrack<T)
                 usleep((T-ttrack)*1e6); // 1e6
         }
         if(seq < num_seq - 1)
@@ -350,9 +359,15 @@ int main(int argc, char **argv)
             SLAM.ChangeDataset();
         }
     }
+    const double wall_elapsed = std::chrono::duration<double>(
+            std::chrono::steady_clock::now() - wall_start).count();
     std::cout << "Tracked " << num_tracked << " images in " << track_total << " seconds." << std::endl;
     std::cout << "Frametime: " << (track_total / num_tracked) << std::endl;
     std::cout << "FPS: " << (num_tracked / track_total) << std::endl;
+    // The two lines above sum per-frame tracking calls; they exclude image loading and
+    // any pacing sleep. These are wall clock over the whole feed.
+    std::cout << "Wall seconds: " << wall_elapsed << std::endl;
+    std::cout << "Wall FPS: " << (num_tracked / wall_elapsed) << std::endl;
 
 
     // Stop all threads

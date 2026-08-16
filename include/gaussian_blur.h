@@ -14,6 +14,9 @@
 #include <opencv2/core/hal/interface.h>
 #include <cuda.h>
 
-void gaussian_blur( uchar *images, uchar *inputImage, uchar *imagesBlured, uchar *inputImageBlured, float *kernel, int cols, int rows, int inputImageStep, float* mvScaleFactor, int maxLevel, cudaStream_t cudaStream);
+// `kernel1d` is the KW-tap 1-D Gaussian whose outer product with itself is the
+// KWxKH kernel; `tmp` is a cols*rows*maxLevel float scratch plane for the
+// horizontal pass.
+void gaussian_blur( uchar *images, uchar *inputImage, uchar *imagesBlured, uchar *inputImageBlured, const float *kernel1d, float *tmp, int cols, int rows, int inputImageStep, float* mvScaleFactor, int maxLevel, cudaStream_t cudaStream);
 
 #endif

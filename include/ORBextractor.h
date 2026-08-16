@@ -90,7 +90,10 @@ public:
 
     void DivideNodeGPU(ExtractorNodeGPU &n1, ExtractorNodeGPU &n2, ExtractorNodeGPU &n3, ExtractorNodeGPU &n4);
 
-    std::vector<OrbKeyPoint> vKeys;
+    // Pointers into the caller's keypoint array rather than copies: subdividing
+    // a node copies its whole key list into the children, and an OrbKeyPoint is
+    // five times the size of a pointer to one.
+    std::vector<const OrbKeyPoint *> vKeys;
     cv::Point2i UL, UR, BL, BR;
     std::list<ExtractorNodeGPU>::iterator lit;
     bool bNoMore;
@@ -226,6 +229,8 @@ protected:
     uchar *d_inputImage;
     uchar *d_imagesBlured;
     uchar *d_inputImageBlured;
+    // Scratch plane for the horizontal half of the separable blur.
+    float *d_blurTmp;
     uchar *outputImages;
     float *d_scaleFactor;
 
