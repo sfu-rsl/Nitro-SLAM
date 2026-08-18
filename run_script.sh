@@ -11,6 +11,7 @@ TurboMap_on=$3
 FastLoop_on=$4
 save_ostream=$5
 version=$6
+iteration=$7
 
 if [ "$FastTrack_on" -eq 1 ]; then
     system_name+="FastTrack"
@@ -22,6 +23,11 @@ fi
 
 if [ "$FastLoop_on" -eq 1 ]; then
     system_name+="${system_name:+&}FastLoop"
+fi
+
+# If all optimizations enabled → Nitro-SLAM
+if [ "$FastTrack_on" -eq 1 ] && [ "$TurboMap_on" -eq 1 ] && [ "$FastLoop_on" -eq 1 ]; then
+    system_name="Nitro-SLAM"
 fi
 
 # If no optimizations enabled → ORB-SLAM3
@@ -40,13 +46,13 @@ kernel_status_TM='1111' # all
 
 # FastLoop
 # kernel_status_FL='111111'
-kernel_status_FL='001111' # disable merged projection search
+kernel_status_FL='001111' # disable merged projection searches
 
 
 # Optional arguments
-kernel_status1=${7:-}
-kernel_status2=${8:-}
-kernel_status3=${9:-}
+kernel_status1=${8:-}
+kernel_status2=${9:-}
+kernel_status3=${10:-}
 
 # FastTrack kernel status
 if [ "$FastTrack_on" -eq 1 ] && [ -n "$kernel_status1" ]; then
@@ -83,7 +89,7 @@ kernel_dir=""
 
 [ -n "$kernel_dir" ] && statsDir+="/${kernel_dir}"
 
-statsDir+="/${dataset_name}/${version}"
+statsDir+="/${version}/${dataset_name}/${iteration}"
 
 if [ ! -d "$statsDir" ]; then
     mkdir -p "$statsDir"

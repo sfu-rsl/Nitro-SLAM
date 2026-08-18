@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 """Summarise the outdoors5 loop-closure ablation into a table.
 
-Walks Results/ for run directories whose version is abl.<pass> and reports,
-per config, how many runs detected a loop, how many actually closed one, and
-the resulting ATE.
+Walks Results/ for the ablation's run directories and reports, per config, how
+many runs detected a loop, how many actually closed one, and the resulting ATE.
 """
 import os
 import time
@@ -14,7 +13,8 @@ from collections import defaultdict
 # Scan every Results root -- the sweep and the maximal run live in separate
 # directories. Override by passing paths on the command line.
 RESULTS_ROOTS = [d for d in ("Results", "Results-ablation") if os.path.isdir(d)]
-VERSION_RE = re.compile(r"^abl\.(\d+)$")
+ABL_VERSION = "abl"
+VERSION_RE = re.compile(r"^(.+)\.(\d+)$")
 ATE_RE = re.compile(r"absolute_translational_error\.rmse\s+([0-9.]+)")
 
 # kernel_status bit -> human name, per stereo_inertial_tum_vi.cc
@@ -66,12 +66,16 @@ def label(system, kernel_dir):
     if not kernel_dir:
         return system
     # Multi-subsystem runs: "FastTrack&TurboMap&FastLoop" / "01101-1111-111111".
-    # Too many kernels to spell out, so report the count instead.
-    if "&" in system:
+    # run_script.sh names the all-three case Nitro-SLAM rather than joining with
+    # '&'. Too many kernels to spell out either way, so report the count instead.
+    if "&" in system or system == "Nitro-SLAM":
         parts = kernel_dir.split("-")
         on = sum(c == "1" for c in kernel_dir)
         # FastTrack's 5th bit is poseOptimization, on-by-default, not a kernel.
-        if system.startswith("FastTrack") and parts and len(parts[0]) > 4:
+        # Its status leads the directory name whenever FastTrack is enabled,
+        # which for Nitro-SLAM it always is.
+        if (system.startswith("FastTrack") or system == "Nitro-SLAM") \
+                and parts and len(parts[0]) > 4:
             on -= int(parts[0][4] == "1")
         return f"COMBINED ({on} kernels)"
     names = BITS.get(system, [])
@@ -87,6 +91,36 @@ def label(system, kernel_dir):
     return f"{system}: " + " + ".join(on)
 
 
+def parse(rel):
+    """Locate a run in the Results tree: (system, kernel_dir, dataset, version, pass).
+
+    Two layouts exist on disk. run_script.sh used to fuse the pass number into
+    the version and hang it off the dataset; it now passes the iteration
+    separately and puts the version above the dataset, since a version spans
+    every dataset in a sweep while an iteration is a repeat of one dataset:
+
+        old   <system>[/<kernels>]/<dataset>/<version>          version "abl.2"
+        new   <system>[/<kernels>]/<version>/<dataset>/<iter>   version "abl", iter "2"
+
+    The dataset is second-from-last either way; a numeric leaf is the giveaway
+    that the pass moved out of the version string.
+    """
+    if len(rel) < 3:
+        return None
+    dataset = rel[-2]
+    if rel[-1].isdigit():
+        version, pass_no, prefix = rel[-3], int(rel[-1]), rel[:-3]
+    else:
+        m = VERSION_RE.match(rel[-1])
+        if not m:
+            return None
+        version, pass_no, prefix = m.group(1), int(m.group(2)), rel[:-2]
+    # Everything above the version is the config: system, then kernel bits.
+    if not prefix:
+        return None
+    return prefix[0], (prefix[1] if len(prefix) > 1 else ""), dataset, version, pass_no
+
+
 def collect():
     """Walk Results/ and group every abl.<pass> run by config."""
     runs = defaultdict(dict)  # (system, kernel_dir) -> {pass: result}
@@ -94,18 +128,15 @@ def collect():
         for root, dirs, files in os.walk(results):
             if "ostream.txt" not in files:
                 continue
-            rel = os.path.relpath(root, results).split(os.sep)
-            if len(rel) < 3:
+            parsed = parse(os.path.relpath(root, results).split(os.sep))
+            if not parsed:
                 continue
-            version, dataset = rel[-1], rel[-2]
-            m = VERSION_RE.match(version)
-            if not m or dataset != "outdoors5":
+            system, kernel_dir, dataset, version, pass_no = parsed
+            if version != ABL_VERSION or dataset != "outdoors5":
                 continue
-            system = rel[0]
-            kernel_dir = rel[1] if len(rel) == 4 else ""
             res = scan(root)
             if res:
-                runs[(system, kernel_dir)][int(m.group(1))] = res
+                runs[(system, kernel_dir)][pass_no] = res
     return runs
 
 
@@ -116,7 +147,7 @@ def main():
         print("no abl.* runs found yet")
         return
 
-    order = {"ORB-SLAM3": 0, "FastTrack": 1, "TurboMap": 2, "FastLoop": 3}
+    order = {"ORB-SLAM3": 0, "FastTrack": 1, "TurboMap": 2, "FastLoop": 3}  # combined runs sort last
     keys = sorted(runs, key=lambda k: (order.get(k[0], 9), k[1]))
 
     hdr = f"{'config':<46} {'status':<9} {'closed':<7} {'det':<10} {'ATE (m)':<22} {'KFs'}"
@@ -158,7 +189,7 @@ def main():
 def summary():
     """Per-config counts: runs, how many detected, closed, crashed."""
     runs = collect()
-    order = {"ORB-SLAM3": 0, "FastTrack": 1, "TurboMap": 2, "FastLoop": 3}
+    order = {"ORB-SLAM3": 0, "FastTrack": 1, "TurboMap": 2, "FastLoop": 3}  # combined runs sort last
     keys = sorted(runs, key=lambda k: (order.get(k[0], 9), k[1]))
 
     hdr = f"{'config':<46} {'runs':>4} {'detected':>9} {'closed':>7} {'crashed':>8}"

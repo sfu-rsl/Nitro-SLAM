@@ -19,6 +19,7 @@ NUM_PASSES=${1:-3}
 START_PASS=${2:-0}
 FILTER=${3:-}
 DATASET=outdoors5
+VERSION=abl
 TIMEOUT=45m
 LOG=ablation_driver.log
 
@@ -66,15 +67,17 @@ CONFIGS=(
 # Where run_script.sh will put this config's output. Mirrors its naming so we can
 # tell a finished run from an interrupted one before spending 16 minutes on it.
 stats_dir() {
-    local ft=$1 tm=$2 fl=$3 ks=$4 version=$5
+    local ft=$1 tm=$2 fl=$3 ks=$4 version=$5 iteration=$6
     local system="" kernels=""
     [ "$ft" -eq 1 ] && system+="FastTrack"
     [ "$tm" -eq 1 ] && system+="${system:+&}TurboMap"
     [ "$fl" -eq 1 ] && system+="${system:+&}FastLoop"
+    # All three on is the full system, which run_script.sh names Nitro-SLAM.
+    [ "$ft" -eq 1 ] && [ "$tm" -eq 1 ] && [ "$fl" -eq 1 ] && system="Nitro-SLAM"
     [ -z "$system" ] && system="ORB-SLAM3"
     # run_script.sh joins per-subsystem statuses with '-' in the directory name.
     [ "$ks" != "-" ] && kernels="/${ks//,/-}"
-    echo "Results/${system}${kernels}/${DATASET}/${version}"
+    echo "Results/${system}${kernels}/${version}/${DATASET}/${iteration}"
 }
 
 echo "=== ablation start $(date -Is): passes ${START_PASS}..$((NUM_PASSES - 1)), ${#CONFIGS[@]} configs ===" >> "$LOG"
@@ -82,7 +85,7 @@ echo "=== ablation start $(date -Is): passes ${START_PASS}..$((NUM_PASSES - 1)),
 for pass in $(seq "$START_PASS" $((NUM_PASSES - 1))); do
     for cfg in "${CONFIGS[@]}"; do
         read -r label ft tm fl ks <<< "$cfg"
-        version="abl.${pass}"
+        version="$VERSION"
 
         if [ -n "$FILTER" ] && [ "$label" != "$FILTER" ]; then
             continue
@@ -91,7 +94,7 @@ for pass in $(seq "$START_PASS" $((NUM_PASSES - 1))); do
         # Resume: keep finished runs, discard interrupted ones. A run that never
         # wrote its trajectory left only a truncated log, which would otherwise
         # score as a genuine crash.
-        dir=$(stats_dir "$ft" "$tm" "$fl" "$ks" "$version")
+        dir=$(stats_dir "$ft" "$tm" "$fl" "$ks" "$version" "$pass")
         if [ -f "$dir/ostream.txt" ]; then
             if grep -q "End of saving trajectory" "$dir/ostream.txt"; then
                 echo "[$(date -Is)] pass $pass  $label  SKIP (already complete)" >> "$LOG"
@@ -101,12 +104,12 @@ for pass in $(seq "$START_PASS" $((NUM_PASSES - 1))); do
             rm -rf "$dir"
         fi
 
-        if [ "$ks" = "-" ]; then
-            args=("$DATASET" "$ft" "$tm" "$fl" 1 "$version")
-        else
-            # One status per enabled subsystem, in FT,TM,FL order.
+        # The pass number is run_script.sh's iteration argument; kernel statuses
+        # follow it, one per enabled subsystem, in FT,TM,FL order.
+        args=("$DATASET" "$ft" "$tm" "$fl" 1 "$version" "$pass")
+        if [ "$ks" != "-" ]; then
             IFS=',' read -r -a statuses <<< "$ks"
-            args=("$DATASET" "$ft" "$tm" "$fl" 1 "$version" "${statuses[@]}")
+            args+=("${statuses[@]}")
         fi
 
         echo "[$(date -Is)] pass $pass  $label  (FT=$ft TM=$tm FL=$fl ks=$ks)" >> "$LOG"
