@@ -9,7 +9,16 @@ set -u
 version=${1:-timing}
 num_itr=${2:-5}
 
-datasets=("MH01" "room3")
+# Every EuRoC and TUM-VI sequence available under $HOME/SLAM/Datasets.
+# Keep in sync with the whitelists in run_script.sh.
+euroc_datasets=("MH01" "MH02" "MH03" "MH04" "MH05" \
+                "V101" "V102" "V103" "V201" "V202" "V203")
+tumvi_datasets=("corridor1" "corridor2" "corridor3" "corridor4" "corridor5" \
+                "magistrale1" "magistrale2" "magistrale3" "magistrale4" "magistrale5" "magistrale6" \
+                "outdoors1" "outdoors2" "outdoors3" "outdoors4" "outdoors5" "outdoors6" "outdoors7" "outdoors8" \
+                "room1" "room2" "room3" "room4" "room5" "room6" \
+                "slides1" "slides2" "slides3")
+datasets=("${euroc_datasets[@]}" "${tumvi_datasets[@]}")
 interval=0.05
 
 # Mirror run_script.sh's default kernel statuses so the stats path can be predicted
@@ -26,6 +35,16 @@ echo "[batch] Nitro-SLAM kernel dir: ${nitro_kdir}"
 # script's own shell and kill the driver.
 cleanup() { pkill -KILL -x stereo_inertial 2>/dev/null; sleep 2; }
 trap 'echo "[batch] interrupted"; cleanup; exit 130' INT TERM
+
+# The long TUM-VI sequences (magistrale/outdoors/slides run 9k-29k frames vs
+# ~2-6k for EuRoC and the room/corridor sets) do not finish inside the 900s that
+# was enough for MH01, so scale the watchdog with sequence length instead.
+run_timeout() {
+    case "$1" in
+        magistrale*|outdoors*|slides*) echo 2700 ;;
+        *)                             echo 900  ;;
+    esac
+}
 
 for i in $(seq 0 $((num_itr - 1))); do
     for dataset in "${datasets[@]}"; do
@@ -50,7 +69,7 @@ for i in $(seq 0 $((num_itr - 1))); do
                                 > "${statsDir}/monitor.log" 2>&1 &
             mon_pid=$!
 
-            timeout 900 ./run_script.sh "$dataset" "$1" "$2" "$3" 1 "$version" "$i"
+            timeout "$(run_timeout "$dataset")" ./run_script.sh "$dataset" "$1" "$2" "$3" 1 "$version" "$i"
             rc=$?
             [ $rc -ne 0 ] && echo "[batch] WARNING rc=$rc for $dataset iter=$i cfg='$cfg'"
 

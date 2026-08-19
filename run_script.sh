@@ -95,7 +95,11 @@ if [ ! -d "$statsDir" ]; then
     mkdir -p "$statsDir"
 fi
 
-tumvi_datasets=("corridor1" "corridor2" "corridor3" "corridor4" "corridor5" "outdoors1" "outdoors5" "outdoors7" "room1" "room2" "room3" "room4" "room5" "room6" "magistrale1" "magistrale2")
+tumvi_datasets=("corridor1" "corridor2" "corridor3" "corridor4" "corridor5" \
+                "magistrale1" "magistrale2" "magistrale3" "magistrale4" "magistrale5" "magistrale6" \
+                "outdoors1" "outdoors2" "outdoors3" "outdoors4" "outdoors5" "outdoors6" "outdoors7" "outdoors8" \
+                "room1" "room2" "room3" "room4" "room5" "room6" \
+                "slides1" "slides2" "slides3")
 euroc_datasets=("MH01" "MH02" "MH03" "MH04" "MH05" "V101" "V102" "V103" "V201" "V202" "V203")
 
 found_in_tumvi=false
