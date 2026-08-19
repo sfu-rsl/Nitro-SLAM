@@ -178,6 +178,12 @@ public:
     std::vector<MapPoint*> GetTrackedMapPoints();
     std::vector<cv::KeyPoint> GetTrackedKeyPointsUn();
 
+    // Id of the Frame built by the last Track*() call. Profiling keys every
+    // Tracking series on this, so the per-frame total and its sub-parts must be
+    // keyed on it too -- the loop counter in the example diverges from it as soon
+    // as a run spans more than one sequence.
+    unsigned long GetCurrentFrameId();
+
     // For debugging
     double GetTimeFromIMUInit();
     bool isLost();

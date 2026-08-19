@@ -30,6 +30,8 @@ class TrackingStats: public StatsInterface {
         std::vector<std::pair<long unsigned int, double>> TWM_poseOptimization_time;
         std::vector<std::pair<long unsigned int, double>> relocalization_time;
         std::vector<std::pair<long unsigned int, double>> trackLocalMap_time;
+        // NeedNewKeyFrame + CreateNewKeyFrame, recorded on every frame.
+        std::vector<std::pair<long unsigned int, double>> createKF_time;
         std::vector<std::pair<long unsigned int, double>> updateLocalMap_time;
         std::vector<std::pair<long unsigned int, double>> updateLocalKF_time;
         std::vector<std::pair<long unsigned int, double>> updateLocalPoints_time;

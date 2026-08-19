@@ -39,7 +39,7 @@ namespace ORB_SLAM3
 
 LoopClosing::LoopClosing(Atlas *pAtlas, KeyFrameDatabase *pDB, ORBVocabulary *pVoc, const bool bFixScale, const bool bActiveLC):
     mbResetRequested(false), mbResetActiveMapRequested(false), mbFinishRequested(false), mbFinished(true), mpAtlas(pAtlas),
-    mpKeyFrameDB(pDB), mpORBVocabulary(pVoc), mpMatchedKF(NULL), mLastLoopKFid(0), mbRunningGBA(false), mbFinishedGBA(true),
+    mpKeyFrameDB(pDB), mpORBVocabulary(pVoc), mpCurrentKF(NULL), mpMatchedKF(NULL), mLastLoopKFid(0), mbRunningGBA(false), mbFinishedGBA(true),
     mbStopGBA(false), mpThreadGBA(NULL), mbFixScale(bFixScale), mnFullBAIdx(0), mnLoopNumCoincidences(0), mnMergeNumCoincidences(0),
     mbLoopDetected(false), mbMergeDetected(false), mnLoopNumNotFound(0), mnMergeNumNotFound(0), mbActiveLC(bActiveLC)
 {
@@ -109,6 +109,7 @@ void LoopClosing::Run()
         bool is_loop = false;
         bool is_good = false;
         bool is_bad = false;
+        bool is_merge = false;
 
         //NEW LOOP AND MERGE DETECTION ALGORITHM
         //----------------------------
@@ -133,7 +134,25 @@ void LoopClosing::Run()
 #endif
 
             auto start1 = std::chrono::high_resolution_clock::now();
+#ifdef REGISTER_LOOP_CLOSING_STATS
+            std::chrono::steady_clock::time_point time_StartPlaceRecognition = std::chrono::steady_clock::now();
+#endif
             bool bFindedRegion = NewDetectCommonRegions();
+#ifdef REGISTER_LOOP_CLOSING_STATS
+            std::chrono::steady_clock::time_point time_EndPlaceRecognition = std::chrono::steady_clock::now();
+            double timePlaceRecognition = std::chrono::duration_cast<std::chrono::duration<double,std::milli> >(time_EndPlaceRecognition - time_StartPlaceRecognition).count();
+            // mpCurrentKF is dequeued inside NewDetectCommonRegions, and stays NULL if
+            // place recognition is disabled (mbActiveLC == false).
+            if(mpCurrentKF) {
+                LoopClosingStats::getInstance().placeRecognition_time.emplace_back(mpCurrentKF->mnId, timePlaceRecognition);
+                // Sampled here, before any correction or merge rewrites the map, so a
+                // row flagged loopClosed carries the size the closure worked over.
+                if(Map* pIterMap = mpCurrentKF->GetMap()) {
+                    LoopClosingStats::getInstance().numKFs.emplace_back(mpCurrentKF->mnId, pIterMap->KeyFramesInMap());
+                    LoopClosingStats::getInstance().numMPs.emplace_back(mpCurrentKF->mnId, pIterMap->MapPointsInMap());
+                }
+            }
+#endif
             auto end1 = std::chrono::high_resolution_clock::now();
             std::chrono::duration<double, std::milli> elapsed1 = end1 - start1;
 
@@ -207,6 +226,8 @@ void LoopClosing::Run()
                             MergeLocal2();
                         else
                             MergeLocal();
+
+                        is_merge = true;
 
 #ifdef REGISTER_TIMES
                         std::chrono::steady_clock::time_point time_EndMerge = std::chrono::steady_clock::now();
@@ -314,7 +335,7 @@ void LoopClosing::Run()
 #ifdef REGISTER_LOOP_CLOSING_STATS
     std::chrono::steady_clock::time_point time_EndLoopCorrection = std::chrono::steady_clock::now();
     double timeLoopCorrection = std::chrono::duration_cast<std::chrono::duration<double,std::milli> >(time_EndLoopCorrection - time_StartLoopCorrection).count();
-    LoopClosingStats::getInstance().loopCorrection_time.push_back(timeLoopCorrection);
+    LoopClosingStats::getInstance().loopCorrection_time.emplace_back(mpCurrentKF->mnId, timeLoopCorrection);
 #endif
 #ifdef REGISTER_TIMES
                         std::chrono::steady_clock::time_point time_EndLoop = std::chrono::steady_clock::now();
@@ -344,12 +365,21 @@ void LoopClosing::Run()
             std::chrono::duration<double, std::milli> elapsed = end - start;
 
 #ifdef REGISTER_LOOP_CLOSING_STATS
-    if(is_loop){
-        if(is_good){
-            std::chrono::steady_clock::time_point time_EndLoopClosing = std::chrono::steady_clock::now();
-            double timeLoopClosing = std::chrono::duration_cast<std::chrono::duration<double,std::milli> >(time_EndLoopClosing - time_StartLoopClosing).count();
-            LoopClosingStats::getInstance().loopClosing_time.push_back(timeLoopClosing);
-        }
+    // Recorded on every iteration that dequeued a keyframe, not only on corrected loops:
+    // the vast majority of iterations are pure region detection, and leaving them out
+    // makes the thread's total time -- and therefore "other" -- unrecoverable.
+    if(mpCurrentKF){
+        std::chrono::steady_clock::time_point time_EndLoopClosing = std::chrono::steady_clock::now();
+        double timeLoopClosing = std::chrono::duration_cast<std::chrono::duration<double,std::milli> >(time_EndLoopClosing - time_StartLoopClosing).count();
+        const unsigned long kfId = mpCurrentKF->mnId;
+        LoopClosingStats &stats = LoopClosingStats::getInstance();
+        stats.loopClosing_time.emplace_back(kfId, timeLoopClosing);
+        // Outcome flags rather than a second copy of the timings: is_loop && is_good
+        // is exactly the condition under which CorrectLoop() ran.
+        stats.loopDetected.emplace_back(kfId, is_loop ? 1 : 0);
+        stats.loopClosed.emplace_back(kfId, (is_loop && is_good) ? 1 : 0);
+        stats.loopRejected.emplace_back(kfId, is_bad ? 1 : 0);
+        stats.mergeDetected.emplace_back(kfId, is_merge ? 1 : 0);
     }
 #endif
         }
@@ -1212,7 +1242,7 @@ bool LoopClosing::DetectCommonRegionsFromBoW(std::vector<KeyFrame*> &vpBowCand, 
 #ifdef REGISTER_LOOP_CLOSING_STATS
                 std::chrono::steady_clock::time_point time_EndSearchByProjection = std::chrono::steady_clock::now();
                 double timeSearchByProjection = std::chrono::duration_cast<std::chrono::duration<double,std::milli> >(time_EndSearchByProjection - time_StartSearchByProjection).count();
-                LoopClosingStats::getInstance().searchByProjection_time.push_back(timeSearchByProjection);
+                LoopClosingStats::getInstance().searchByProjection_time.emplace_back(mpCurrentKF->mnId, timeSearchByProjection);
 #endif
             
             }
@@ -1441,6 +1471,10 @@ void LoopClosing::CorrectLoop()
     std::chrono::steady_clock::time_point time_StartFusion = std::chrono::steady_clock::now();
 #endif
 
+#ifdef REGISTER_LOOP_CLOSING_STATS
+    std::chrono::steady_clock::time_point time_StartLoopFusion = std::chrono::steady_clock::now();
+#endif
+
     std::chrono::duration<double, std::milli> elapsed7, elapsed8;
     {
         // Get Map Mutex
@@ -1564,7 +1598,7 @@ void LoopClosing::CorrectLoop()
 #ifdef REGISTER_LOOP_CLOSING_STATS
         std::chrono::steady_clock::time_point time_EndSearchAndFuse = std::chrono::steady_clock::now();
         double timeSearchAndFuse = std::chrono::duration_cast<std::chrono::duration<double,std::milli> >(time_EndSearchAndFuse - time_StartSearchAndFuse).count();
-        LoopClosingStats::getInstance().searchAndFuse_time.push_back(timeSearchAndFuse);
+        LoopClosingStats::getInstance().searchAndFuse_time.emplace_back(mpCurrentKF->mnId, timeSearchAndFuse);
 #endif
     auto end9 = std::chrono::high_resolution_clock::now();
     std::chrono::duration<double, std::milli> elapsed9 = end9 - start9;
@@ -1602,13 +1636,18 @@ void LoopClosing::CorrectLoop()
         double timeFusion = std::chrono::duration_cast<std::chrono::duration<double,std::milli> >(time_EndFusion - time_StartFusion).count();
         vdLoopFusion_ms.push_back(timeFusion);
 #endif
+#ifdef REGISTER_LOOP_CLOSING_STATS
+    // Loop fusion ends where the essential-graph optimization begins, so that
+    // loopCorrection = loopFusion + graphOptimization + other.
+    std::chrono::steady_clock::time_point time_EndLoopFusion = std::chrono::steady_clock::now();
+    double timeLoopFusion = std::chrono::duration_cast<std::chrono::duration<double,std::milli> >(time_EndLoopFusion - time_StartLoopFusion).count();
+    LoopClosingStats::getInstance().loopFusion_time.emplace_back(mpCurrentKF->mnId, timeLoopFusion);
+
+    std::chrono::steady_clock::time_point time_StartGraphOptimization = std::chrono::steady_clock::now();
+#endif
     //cout << "Optimize essential graph" << endl;
     if(pLoopMap->IsInertial() && pLoopMap->isImuInitialized())
     {
-
-#ifdef REGISTER_LOOP_CLOSING_STATS
-        std::chrono::steady_clock::time_point time_StartGraphOptimization = std::chrono::steady_clock::now();
-#endif
         if(LoopClosingKernelController::graphOptimizationOnGPU){
             std::cout << "PGO GPU!" << std::endl;
             OptimizerGPU::OptimizeEssentialGraph4DoF(pLoopMap, mpLoopMatchedKF, mpCurrentKF, NonCorrectedSim3, CorrectedSim3, LoopConnections);
@@ -1617,20 +1656,18 @@ void LoopClosing::CorrectLoop()
             std::cout << "PGO CPU!" << std::endl;
             Optimizer::OptimizeEssentialGraph4DoF(pLoopMap, mpLoopMatchedKF, mpCurrentKF, NonCorrectedSim3, CorrectedSim3, LoopConnections);
         }
-
-
-#ifdef REGISTER_LOOP_CLOSING_STATS
-        std::chrono::steady_clock::time_point time_EndGraphOptimization = std::chrono::steady_clock::now();
-        double timeGraphOptimization = std::chrono::duration_cast<std::chrono::duration<double,std::milli> >(time_EndGraphOptimization - time_StartGraphOptimization).count();
-        LoopClosingStats::getInstance().graphOptimization_time.push_back(timeGraphOptimization);
-#endif
-
     }
     else
     {
         //cout << "Loop -> Scale correction: " << mg2oLoopScw.scale() << endl;
         Optimizer::OptimizeEssentialGraph(pLoopMap, mpLoopMatchedKF, mpCurrentKF, NonCorrectedSim3, CorrectedSim3, LoopConnections, bFixedScale);
     }
+#ifdef REGISTER_LOOP_CLOSING_STATS
+    // Wraps both branches: the non-inertial 7-DoF path used to go untimed entirely.
+    std::chrono::steady_clock::time_point time_EndGraphOptimization = std::chrono::steady_clock::now();
+    double timeGraphOptimization = std::chrono::duration_cast<std::chrono::duration<double,std::milli> >(time_EndGraphOptimization - time_StartGraphOptimization).count();
+    LoopClosingStats::getInstance().graphOptimization_time.emplace_back(mpCurrentKF->mnId, timeGraphOptimization);
+#endif
 #ifdef REGISTER_TIMES
     std::chrono::steady_clock::time_point time_EndOpt = std::chrono::steady_clock::now();
 
@@ -2781,6 +2818,9 @@ void LoopClosing::RunGlobalBundleAdjustment(Map* pActiveMap, unsigned long nLoop
     vnGBAKFs.push_back(pActiveMap->GetAllKeyFrames().size());
     vnGBAMPs.push_back(pActiveMap->GetAllMapPoints().size());
 #endif
+#ifdef REGISTER_LOOP_CLOSING_STATS
+    std::chrono::steady_clock::time_point time_StartGlobalBA = std::chrono::steady_clock::now();
+#endif
 
     const bool bImuInit = pActiveMap->isImuInitialized();
 
@@ -2792,6 +2832,14 @@ void LoopClosing::RunGlobalBundleAdjustment(Map* pActiveMap, unsigned long nLoop
     }
     else
         Optimizer::FullInertialBA(pActiveMap,7,false,nLoopKF,&mbStopGBA);
+
+#ifdef REGISTER_LOOP_CLOSING_STATS
+    // Runs on mpThreadGBA, so this is NOT part of loopClosing_time. nLoopKF is the id
+    // of the keyframe whose loop correction launched this GBA.
+    std::chrono::steady_clock::time_point time_EndGlobalBA = std::chrono::steady_clock::now();
+    double timeGlobalBA = std::chrono::duration_cast<std::chrono::duration<double,std::milli> >(time_EndGlobalBA - time_StartGlobalBA).count();
+    LoopClosingStats::getInstance().recordGlobalBA((unsigned long)nLoopKF, timeGlobalBA);
+#endif
 
 #ifdef REGISTER_TIMES
     std::chrono::steady_clock::time_point time_EndGBA = std::chrono::steady_clock::now();

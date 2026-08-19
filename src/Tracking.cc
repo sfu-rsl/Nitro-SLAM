@@ -2304,6 +2304,9 @@ void Tracking::Track()
 #ifdef REGISTER_TIMES
             std::chrono::steady_clock::time_point time_StartNewKF = std::chrono::steady_clock::now();
 #endif
+#ifdef REGISTER_TRACKING_STATS
+            std::chrono::steady_clock::time_point time_StartNewKF_ = std::chrono::steady_clock::now();
+#endif
             bool bNeedKF = NeedNewKeyFrame();
 
             // Check if we need to insert a new keyframe
@@ -2312,6 +2315,14 @@ void Tracking::Track()
                                    (mSensor == System::IMU_MONOCULAR || mSensor == System::IMU_STEREO || mSensor == System::IMU_RGBD))))
                 CreateNewKeyFrame();
 
+#ifdef REGISTER_TRACKING_STATS
+            // Recorded for every frame, not just the ones that produce a keyframe, so it
+            // subtracts cleanly from the per-frame total. This is also where Tracking
+            // blocks on Local Mapping, so it is where cross-thread stalls surface.
+            std::chrono::steady_clock::time_point time_EndNewKF_ = std::chrono::steady_clock::now();
+            double timeNewKF_ = std::chrono::duration_cast<std::chrono::duration<double,std::milli> >(time_EndNewKF_ - time_StartNewKF_).count();
+            TrackingStats::getInstance().createKF_time.emplace_back(mCurrentFrame.mnId, timeNewKF_);
+#endif
 #ifdef REGISTER_TIMES
             std::chrono::steady_clock::time_point time_EndNewKF = std::chrono::steady_clock::now();
 
@@ -2931,6 +2942,14 @@ bool Tracking::TrackWithMotionModel()
     {
         // Predict state with IMU if it is initialized and it doesnt need reset
         PredictStateIMU();
+#ifdef REGISTER_TRACKING_STATS
+        // This early return is the path taken on almost every frame once the IMU is
+        // initialized. Leaving it unrecorded dropped ~97% of the samples and pushed
+        // the whole pose-prediction phase into the unaccounted-for remainder.
+        std::chrono::steady_clock::time_point TWM_end = std::chrono::steady_clock::now();
+        double trackWithMotionModel = std::chrono::duration_cast<std::chrono::duration<double,std::milli> >(TWM_end - TWM_start).count();
+        TrackingStats::getInstance().trackWithMotionModel_time.emplace_back(mCurrentFrame.mnId, trackWithMotionModel);
+#endif
         return true;
     }
     else

@@ -68,6 +68,12 @@ void TrackingStats::saveStats(const string &file_path) {
     }
     myfile.close();
 
+    myfile.open(data_path + "/createKF_time.txt");
+    for (const auto& p : createKF_time) {
+        myfile << p.first << ": " << p.second << std::endl;
+    }
+    myfile.close();
+
     myfile.open(data_path + "/updateLocalMap_time.txt");
     for (const auto& p : updateLocalMap_time) {
         myfile << p.first << ": " << p.second << std::endl;

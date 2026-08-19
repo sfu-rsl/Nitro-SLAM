@@ -1,7 +1,22 @@
 #include "Stats/LoopClosingStats.h"
-#include <sstream>  
+#include <sstream>
 
 using namespace std;
+
+#ifdef REGISTER_LOOP_CLOSING_STATS
+namespace {
+
+template <typename S>
+void dumpSeries(const string &path, const S &s) {
+    std::ofstream myfile(path);
+    for (const auto &p : s) {
+        myfile << p.first << ": " << p.second << std::endl;
+    }
+    myfile.close();
+}
+
+} // namespace
+#endif
 
 void LoopClosingStats::saveStats(const string &file_path) {
 #ifdef REGISTER_LOOP_CLOSING_STATS
@@ -16,39 +31,35 @@ void LoopClosingStats::saveStats(const string &file_path) {
     }
     cout << "Writing stats data into file: " << data_path << '\n';
 
-    std::ofstream myfile;
-
     LoopClosingKernelController::saveKernelsStats(data_path);
 
-    myfile.open(data_path + "/loopClosing_time.txt");
-    for (size_t i = 0; i < loopClosing_time.size(); ++i) {
-        myfile << i << ": " << loopClosing_time[i] << std::endl;
+    // Global BA may still be running on mpThreadGBA -- Shutdown() does not join it.
+    Series globalBA_snapshot;
+    {
+        std::lock_guard<std::mutex> lock(mGlobalBAMutex);
+        globalBA_snapshot = globalBA_time;
     }
-    myfile.close();
 
-    myfile.open(data_path + "/loopCorrection_time.txt");
-    for (size_t i = 0; i < loopCorrection_time.size(); ++i) {
-        myfile << i << ": " << loopCorrection_time[i] << std::endl;
-    }
-    myfile.close();
+    dumpSeries(data_path + "/loopClosing_time.txt",        loopClosing_time);
+    dumpSeries(data_path + "/placeRecognition_time.txt",   placeRecognition_time);
+    dumpSeries(data_path + "/searchByProjection_time.txt", searchByProjection_time);
+    dumpSeries(data_path + "/loopCorrection_time.txt",     loopCorrection_time);
+    dumpSeries(data_path + "/loopFusion_time.txt",         loopFusion_time);
+    dumpSeries(data_path + "/searchAndFuse_time.txt",      searchAndFuse_time);
+    dumpSeries(data_path + "/graphOptimization_time.txt",  graphOptimization_time);
+    dumpSeries(data_path + "/globalBA_time.txt",           globalBA_snapshot);
 
-    myfile.open(data_path + "/searchAndFuse_time.txt");
-    for (size_t i = 0; i < searchAndFuse_time.size(); ++i) {
-        myfile << i << ": " << searchAndFuse_time[i] << std::endl;
-    }
-    myfile.close();
+    // Per-iteration outcome flags and map size: filter on these to get the closures.
+    dumpSeries(data_path + "/loopDetected.txt",            loopDetected);
+    dumpSeries(data_path + "/loopClosed.txt",              loopClosed);
+    dumpSeries(data_path + "/loopRejected.txt",            loopRejected);
+    dumpSeries(data_path + "/mergeDetected.txt",           mergeDetected);
+    dumpSeries(data_path + "/numKFs.txt",                  numKFs);
+    dumpSeries(data_path + "/numMPs.txt",                  numMPs);
 
-    myfile.open(data_path + "/searchByProjection_time.txt");
-    for (size_t i = 0; i < searchByProjection_time.size(); ++i) {
-        myfile << i << ": " << searchByProjection_time[i] << std::endl;
-    }
-    myfile.close();
-
-    myfile.open(data_path + "/graphOptimization_time.txt");
-    for (size_t i = 0; i < graphOptimization_time.size(); ++i) {
-        myfile << i << ": " << graphOptimization_time[i] << std::endl;
-    }
-    myfile.close();
-
+    int nClosed = 0;
+    for (const auto &f : loopClosed) nClosed += f.second;
+    cout << "[LoopClosingStats:] " << nClosed << " closure(s) recorded out of "
+         << loopClosing_time.size() << " iteration(s)\n";
 #endif
 }

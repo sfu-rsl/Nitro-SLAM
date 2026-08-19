@@ -295,7 +295,9 @@ int main(int argc, char **argv)
 
 #ifdef REGISTER_TRACKING_STATS
             t_track = t_rect + t_resize + std::chrono::duration_cast<std::chrono::duration<double,std::milli> >(t2 - t1).count();
-            TrackingStats::getInstance().tracking_time.emplace_back((long unsigned int)ni, t_track);
+            // Keyed on the Frame id, not the loop counter: the Tracking sub-timers key on
+            // Frame::mnId, which keeps counting across sequences while ni restarts.
+            TrackingStats::getInstance().tracking_time.emplace_back(SLAM.GetCurrentFrameId(), t_track);
 #endif
 
 #ifdef REGISTER_TIMES

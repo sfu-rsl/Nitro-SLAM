@@ -37,6 +37,35 @@ else()
    message(FATAL_ERROR "The compiler ${CMAKE_CXX_COMPILER} has no C++14 support. Please use a different C++ compiler.")
 endif()
 
+# Per-thread profiling instrumentation. These gate the Stats/ singletons that write
+# the per-frame / per-iteration timing breakdowns under <strStatsFile>/{Tracking,
+# LocalMapping,LoopClosing}/data/. REGISTER_STATS turns on all three at once.
+# They are mutually exclusive with the upstream REGISTER_TIMES instrumentation:
+# both declare identically-named time_point locals in the same scope.
+option(REGISTER_STATS               "Enable all Nitro-SLAM profiling stats"   OFF)
+option(REGISTER_TRACKING_STATS      "Enable FastTrack profiling stats"        OFF)
+option(REGISTER_LOCAL_MAPPING_STATS "Enable TurboMap profiling stats"         OFF)
+option(REGISTER_LOOP_CLOSING_STATS  "Enable FastLoop profiling stats"         OFF)
+option(REGISTER_TIMES               "Enable upstream ORB-SLAM3 REGISTER_TIMES" OFF)
+
+if(REGISTER_STATS)
+  set(REGISTER_TRACKING_STATS ON)
+  set(REGISTER_LOCAL_MAPPING_STATS ON)
+  set(REGISTER_LOOP_CLOSING_STATS ON)
+endif()
+
+if(REGISTER_TIMES AND (REGISTER_TRACKING_STATS OR REGISTER_LOCAL_MAPPING_STATS OR REGISTER_LOOP_CLOSING_STATS))
+  message(FATAL_ERROR "REGISTER_TIMES cannot be combined with the REGISTER_*_STATS options "
+                      "(duplicate time_point declarations in LocalMapping/LoopClosing). Pick one.")
+endif()
+
+foreach(_stat REGISTER_TRACKING_STATS REGISTER_LOCAL_MAPPING_STATS REGISTER_LOOP_CLOSING_STATS REGISTER_TIMES)
+  if(${_stat})
+    add_compile_definitions(${_stat})
+    message(STATUS "Profiling: ${_stat} enabled")
+  endif()
+endforeach()
+
 add_compile_definitions(SPDLOG_ACTIVE_LEVEL=5)
 add_compile_definitions(KOMPUTE_VK_API_MAJOR_VERSION=1 KOMPUTE_VK_API_MINOR_VERSION=2)
 add_compile_definitions(KOMPUTE_DISABLE_VK_DEBUG_LAYERS)

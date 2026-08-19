@@ -73,7 +73,7 @@ MAPPING_DATA_WRAPPER::CudaKeyFrame* create(ORB_SLAM3::KeyFrame* KF) {
 #ifdef REGISTER_LOCAL_MAPPING_STATS
     std::chrono::steady_clock::time_point end = std::chrono::steady_clock::now();
     double time = std::chrono::duration_cast<std::chrono::duration<double,std::milli> >(end - start).count();
-    LocalMappingStats::getInstance().addCudaKeyFrame_time.push_back(time);
+    LocalMappingStats::getInstance().recordAddCudaKeyFrame(KF->mnId, time);
 #endif
 
     return ptr;
@@ -100,7 +100,7 @@ void destroy(ORB_SLAM3::KeyFrame* KF) {
 #ifdef REGISTER_LOCAL_MAPPING_STATS
     std::chrono::steady_clock::time_point end = std::chrono::steady_clock::now();
     double time = std::chrono::duration_cast<std::chrono::duration<double,std::milli> >(end - start).count();
-    LocalMappingStats::getInstance().eraseCudaKeyFrame_time.push_back(time);
+    LocalMappingStats::getInstance().recordEraseCudaKeyFrame(KF->mnId, time);
 #endif
 }
 

@@ -251,7 +251,10 @@ int main(int argc, char **argv)
 
             if(imageScale != 1.f)
             {
-#ifdef REGISTER_TIMES
+// Resize is part of the per-frame tracking total, so it must be measured
+// whenever either instrumentation is on -- otherwise t_resize stays 0 and
+// tracking_time silently under-counts on any run with imageScale != 1.
+#if defined(REGISTER_TIMES) || defined(REGISTER_TRACKING_STATS)
     #ifdef COMPILEDWITHC11
                 std::chrono::steady_clock::time_point t_Start_Resize = std::chrono::steady_clock::now();
     #else
@@ -262,14 +265,16 @@ int main(int argc, char **argv)
                 int height = imLeft.rows * imageScale;
                 cv::resize(imLeft, imLeft, cv::Size(width, height));
                 cv::resize(imRight, imRight, cv::Size(width, height));
-#ifdef REGISTER_TIMES
+#if defined(REGISTER_TIMES) || defined(REGISTER_TRACKING_STATS)
     #ifdef COMPILEDWITHC11
                 std::chrono::steady_clock::time_point t_End_Resize = std::chrono::steady_clock::now();
     #else
                 std::chrono::monotonic_clock::time_point t_End_Resize = std::chrono::monotonic_clock::now();
     #endif
                 t_resize = std::chrono::duration_cast<std::chrono::duration<double,std::milli> >(t_End_Resize - t_Start_Resize).count();
+    #ifdef REGISTER_TIMES
                 SLAM.InsertResizeTime(t_resize);
+    #endif
 #endif
             }
 
@@ -327,7 +332,9 @@ int main(int argc, char **argv)
 
 #ifdef REGISTER_TRACKING_STATS
             t_track = t_resize + std::chrono::duration_cast<std::chrono::duration<double,std::milli> >(t2 - t1).count();
-            TrackingStats::getInstance().tracking_time.emplace_back((long unsigned int)ni, t_track);
+            // Keyed on the Frame id, not the loop counter: the Tracking sub-timers key on
+            // Frame::mnId, which keeps counting across sequences while ni restarts.
+            TrackingStats::getInstance().tracking_time.emplace_back(SLAM.GetCurrentFrameId(), t_track);
 #endif
 
 #ifdef REGISTER_TIMES

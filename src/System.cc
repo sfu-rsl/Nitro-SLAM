@@ -1348,6 +1348,11 @@ int System::GetTrackingState()
     return mTrackingState;
 }
 
+unsigned long System::GetCurrentFrameId()
+{
+    return mpTracker->mCurrentFrame.mnId;
+}
+
 vector<MapPoint*> System::GetTrackedMapPoints()
 {
     unique_lock<mutex> lock(mMutexState);

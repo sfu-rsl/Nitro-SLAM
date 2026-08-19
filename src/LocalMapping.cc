@@ -125,7 +125,7 @@ void LocalMapping::Run()
 #ifdef REGISTER_LOCAL_MAPPING_STATS
             std::chrono::steady_clock::time_point time_EndProcessKF = std::chrono::steady_clock::now();
             double timeProcessKF = std::chrono::duration_cast<std::chrono::duration<double,std::milli> >(time_EndProcessKF - time_StartProcessKF).count();
-            LocalMappingStats::getInstance().processKF_time.push_back(timeProcessKF);
+            LocalMappingStats::getInstance().processKF_time.emplace_back(mpCurrentKeyFrame->mnId, timeProcessKF);
 #endif
 #ifdef REGISTER_TIMES
             std::chrono::steady_clock::time_point time_EndProcessKF = std::chrono::steady_clock::now();
@@ -143,7 +143,7 @@ void LocalMapping::Run()
 #ifdef REGISTER_LOCAL_MAPPING_STATS
             std::chrono::steady_clock::time_point time_EndMPCulling = std::chrono::steady_clock::now();
             double timeMPCulling = std::chrono::duration_cast<std::chrono::duration<double,std::milli> >(time_EndMPCulling - time_StartMPCulling).count();
-            LocalMappingStats::getInstance().MPCulling_time.push_back(timeMPCulling);
+            LocalMappingStats::getInstance().MPCulling_time.emplace_back(mpCurrentKeyFrame->mnId, timeMPCulling);
 #endif
 
 #ifdef REGISTER_TIMES
@@ -166,7 +166,7 @@ void LocalMapping::Run()
 #ifdef REGISTER_LOCAL_MAPPING_STATS
             std::chrono::steady_clock::time_point time_EndMPCreation = std::chrono::steady_clock::now();
             double timeMPCreation = std::chrono::duration_cast<std::chrono::duration<double,std::milli> >(time_EndMPCreation - time_StartMPCreation).count();
-            LocalMappingStats::getInstance().MPCreation_time.push_back(timeMPCreation);
+            LocalMappingStats::getInstance().MPCreation_time.emplace_back(mpCurrentKeyFrame->mnId, timeMPCreation);
 #endif
 
             mbAbortBA = false;
@@ -187,7 +187,7 @@ void LocalMapping::Run()
 #ifdef REGISTER_LOCAL_MAPPING_STATS
             std::chrono::steady_clock::time_point time_EndSearchInNeighbors = std::chrono::steady_clock::now();
             double timeSearchInNeighbors = std::chrono::duration_cast<std::chrono::duration<double,std::milli> >(time_EndSearchInNeighbors - time_StartSearchInNeighbors).count();
-            LocalMappingStats::getInstance().searchInNeighbors_time.push_back(timeSearchInNeighbors);
+            LocalMappingStats::getInstance().searchInNeighbors_time.emplace_back(mpCurrentKeyFrame->mnId, timeSearchInNeighbors);
 #endif
 
 #ifdef REGISTER_TIMES
@@ -254,7 +254,7 @@ void LocalMapping::Run()
 #ifdef REGISTER_LOCAL_MAPPING_STATS
             std::chrono::steady_clock::time_point time_EndLBA = std::chrono::steady_clock::now();
             double timeLBA = std::chrono::duration_cast<std::chrono::duration<double,std::milli> >(time_EndLBA - time_StartLBA).count();
-            LocalMappingStats::getInstance().LBA_time.push_back(timeLBA);
+            LocalMappingStats::getInstance().LBA_time.emplace_back(mpCurrentKeyFrame->mnId, timeLBA);
 #endif
 
 #ifdef REGISTER_TIMES
@@ -299,7 +299,7 @@ void LocalMapping::Run()
 #ifdef REGISTER_LOCAL_MAPPING_STATS
             std::chrono::steady_clock::time_point time_EndKFCulling = std::chrono::steady_clock::now();
             double timeKFCulling = std::chrono::duration_cast<std::chrono::duration<double,std::milli> >(time_EndKFCulling - time_StartKFCulling).count();
-            LocalMappingStats::getInstance().KFCulling_time.push_back(timeKFCulling);
+            LocalMappingStats::getInstance().KFCulling_time.emplace_back(mpCurrentKeyFrame->mnId, timeKFCulling);
 #endif
 
 #ifdef REGISTER_TIMES
@@ -364,7 +364,7 @@ void LocalMapping::Run()
 #ifdef REGISTER_LOCAL_MAPPING_STATS
             std::chrono::steady_clock::time_point time_EndLocalMap = std::chrono::steady_clock::now();
             double timeLocalMap = std::chrono::duration_cast<std::chrono::duration<double,std::milli> >(time_EndLocalMap - time_StartProcessKF).count();
-            LocalMappingStats::getInstance().localMapping_time.push_back(timeLocalMap);
+            LocalMappingStats::getInstance().localMapping_time.emplace_back(mpCurrentKeyFrame->mnId, timeLocalMap);
 #endif
 
 #ifdef REGISTER_TIMES
@@ -465,7 +465,7 @@ void LocalMapping::ProcessNewKeyFrame()
 #ifdef REGISTER_LOCAL_MAPPING_STATS
         std::chrono::steady_clock::time_point time_EndAddFeatVec = std::chrono::steady_clock::now();
         double timeAddFeatVec = std::chrono::duration_cast<std::chrono::duration<double,std::milli> >(time_EndAddFeatVec - time_StartAddFeatVec).count();
-        LocalMappingStats::getInstance().addFeatureVector_time.push_back(timeAddFeatVec);
+        LocalMappingStats::getInstance().addFeatureVector_time.emplace_back(mpCurrentKeyFrame->mnId, timeAddFeatVec);
 #endif
     }
 
@@ -885,7 +885,7 @@ void LocalMapping::CreateNewMapPoints()
     } 
 
 #ifdef REGISTER_LOCAL_MAPPING_STATS
-    LocalMappingStats::getInstance().searchForTriangulation_time.push_back(timeTriangulation);
+    LocalMappingStats::getInstance().searchForTriangulation_time.emplace_back(mpCurrentKeyFrame->mnId, timeTriangulation);
 #endif
 }
 
@@ -963,7 +963,7 @@ void LocalMapping::CreateNewMapPointsGPU()
 #ifdef REGISTER_LOCAL_MAPPING_STATS
     std::chrono::steady_clock::time_point time_EndTriangulation = std::chrono::steady_clock::now();
     double timeTriangulation = std::chrono::duration_cast<std::chrono::duration<double,std::milli> >(time_EndTriangulation - time_StartTriangulation).count();
-    LocalMappingStats::getInstance().searchForTriangulation_time.push_back(timeTriangulation);
+    LocalMappingStats::getInstance().searchForTriangulation_time.emplace_back(mpCurrentKeyFrame->mnId, timeTriangulation);
 #endif
 
     // Equivalence check against the CPU matcher. Runs before the triangulation loop so
@@ -1269,7 +1269,7 @@ void LocalMapping::CreateNewMapPointsGPU()
         }
     }    
 #ifdef REGISTER_LOCAL_MAPPING_STATS
-    LocalMappingStats::getInstance().createdMappoints_num.push_back(num_created_mappoints);
+    LocalMappingStats::getInstance().createdMappoints_num.emplace_back(mpCurrentKeyFrame->mnId, num_created_mappoints);
 #endif
 }
 
