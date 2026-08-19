@@ -99,7 +99,7 @@ def write_loop_csv(lc_dir, out_path):
     """Join the Loop Closing series into one tidy row per iteration."""
     cols = ['loopClosing_time', 'placeRecognition_time', 'loopCorrection_time',
             'loopFusion_time', 'searchAndFuse_time', 'graphOptimization_time',
-            'searchByProjection_time', 'globalBA_time',
+            'searchByProjection_time', 'merge_time', 'globalBA_time',
             'loopDetected', 'loopClosed', 'loopRejected', 'mergeDetected',
             'numKFs', 'numMPs']
     data = {c: (load(os.path.join(lc_dir, c + '.txt')) or {}) for c in cols}
@@ -166,6 +166,8 @@ def main():
             ('map point fusion',    'searchInNeighbors_time'),
             ('local BA',            'LBA_time'),
             ('keyframe culling',    'KFCulling_time'),
+            ('IMU init / VIBA',     'imuInit_time'),
+            ('scale refinement',    'scaleRefinement_time'),
         ],
         notes=(
             'local BA and keyframe culling are skipped when a new keyframe arrives '
@@ -182,6 +184,7 @@ def main():
         [
             ('region detection',    'placeRecognition_time'),
             ('loop correction',     'loopCorrection_time'),
+            ('map merge',           'merge_time'),
         ],
         notes=(
             'loop correction fires only on corrected loops; most iterations are '

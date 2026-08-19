@@ -47,6 +47,7 @@ void LoopClosingStats::saveStats(const string &file_path) {
     dumpSeries(data_path + "/loopFusion_time.txt",         loopFusion_time);
     dumpSeries(data_path + "/searchAndFuse_time.txt",      searchAndFuse_time);
     dumpSeries(data_path + "/graphOptimization_time.txt",  graphOptimization_time);
+    dumpSeries(data_path + "/merge_time.txt",              merge_time);
     dumpSeries(data_path + "/globalBA_time.txt",           globalBA_snapshot);
 
     // Per-iteration outcome flags and map size: filter on these to get the closures.

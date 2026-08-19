@@ -1967,6 +1967,10 @@ bool LocalMapping::isFinished()
 
 void LocalMapping::InitializeIMU(float priorG, float priorA, bool bFIBA)
 {
+#ifdef REGISTER_LOCAL_MAPPING_STATS
+    LocalMappingStats::ScopedTimer imuInitTimer(
+        LocalMappingStats::getInstance().imuInit_time, mpCurrentKeyFrame->mnId);
+#endif
     if (mbResetRequested)
         return;
 
@@ -2098,6 +2102,11 @@ void LocalMapping::InitializeIMU(float priorG, float priorA, bool bFIBA)
     std::chrono::steady_clock::time_point t4 = std::chrono::steady_clock::now();
     if (bFIBA)
     {
+#ifdef REGISTER_LOCAL_MAPPING_STATS
+        LocalMappingStats::ScopedTimer fibaTimer(
+            LocalMappingStats::getInstance().imuInitFIBA_time, mpCurrentKeyFrame->mnId);
+#endif
+        // CPU only: the map at IMU init is too small for the GPU path to pay off.
         if (priorA!=0.f)
             Optimizer::FullInertialBA(mpAtlas->GetCurrentMap(), 100, false, mpCurrentKeyFrame->mnId, NULL, true, priorG, priorA);
         else
@@ -2223,6 +2232,10 @@ void LocalMapping::InitializeIMU(float priorG, float priorA, bool bFIBA)
 
 void LocalMapping::ScaleRefinement()
 {
+#ifdef REGISTER_LOCAL_MAPPING_STATS
+    LocalMappingStats::ScopedTimer scaleRefTimer(
+        LocalMappingStats::getInstance().scaleRefinement_time, mpCurrentKeyFrame->mnId);
+#endif
     // Minimum number of keyframes to compute a solution
     // Minimum time (seconds) between first and last keyframe to compute a solution. Make the difference between monocular and stereo
     // unique_lock<mutex> lock0(mMutexImuInit);

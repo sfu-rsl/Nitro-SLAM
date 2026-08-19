@@ -41,6 +41,12 @@ void LocalMappingStats::saveStats(const string &file_path) {
     dumpSeries(data_path + "/searchForTriangulation_time.txt", searchForTriangulation_time);
     dumpSeries(data_path + "/createdMappoints_num.txt",        createdMappoints_num);
 
+    // IMU initialization: rare, and each blocks the thread for longer than a
+    // typical iteration, though on room3 only ~1.5x the mean.
+    dumpSeries(data_path + "/imuInit_time.txt",                imuInit_time);
+    dumpSeries(data_path + "/imuInitFIBA_time.txt",            imuInitFIBA_time);
+    dumpSeries(data_path + "/scaleRefinement_time.txt",        scaleRefinement_time);
+
     // GPU functions times
     dumpSeries(data_path + "/addCudaKeyFrame_time.txt",  addCudaKeyFrame_time);
     dumpSeries(data_path + "/eraseCudaKeyFrame_time.txt", eraseCudaKeyFrame_time);

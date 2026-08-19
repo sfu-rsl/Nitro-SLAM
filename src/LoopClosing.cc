@@ -221,11 +221,19 @@ void LoopClosing::Run()
 
                         nMerges += 1;
 #endif
+#ifdef REGISTER_LOOP_CLOSING_STATS
+                        std::chrono::steady_clock::time_point time_StartMerge_ = std::chrono::steady_clock::now();
+#endif
                         // TODO UNCOMMENT
                         if (mpTracker->mSensor==System::IMU_MONOCULAR ||mpTracker->mSensor==System::IMU_STEREO || mpTracker->mSensor==System::IMU_RGBD)
                             MergeLocal2();
                         else
                             MergeLocal();
+#ifdef REGISTER_LOOP_CLOSING_STATS
+                        std::chrono::steady_clock::time_point time_EndMerge_ = std::chrono::steady_clock::now();
+                        double timeMerge_ = std::chrono::duration_cast<std::chrono::duration<double,std::milli> >(time_EndMerge_ - time_StartMerge_).count();
+                        LoopClosingStats::getInstance().merge_time.emplace_back(mpCurrentKF->mnId, timeMerge_);
+#endif
 
                         is_merge = true;
 

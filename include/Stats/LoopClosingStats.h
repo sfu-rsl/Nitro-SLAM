@@ -68,6 +68,11 @@ class LoopClosingStats: public StatsInterface {
         Series searchAndFuse_time;
         Series graphOptimization_time;
 
+        // Map merge: the full MergeLocal()/MergeLocal2() call. Only on merge
+        // iterations, and mutually exclusive with loop correction within an
+        // iteration, so loopClosing = regionDetection + correction + merge + other.
+        Series merge_time;
+
         // Global BA. Runs on mpThreadGBA, so it is NOT contained in loopClosing_time --
         // do not subtract it when computing "other". Keyed by the loop keyframe id.
         // Written from that thread while the Loop Closing thread writes everything

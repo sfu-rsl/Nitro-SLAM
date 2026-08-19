@@ -244,11 +244,18 @@ void FullInertialBAInternal(bool use_pcg, Map *pMap, int its, const bool bFixLoc
 
     auto gc_desc = GyroRWConstraintDescriptor<FP, SP, graphite::DefaultLoss<FP, 3>>(&gyro_bias_desc, &gyro_bias_desc);
     gc_desc.reserve(N);
-    graph.add_factor_descriptor(&gc_desc);
 
     auto ac_desc = AccRWConstraintDescriptor<FP, SP, graphite::DefaultLoss<FP, 3>>(&acc_bias_desc, &acc_bias_desc);
     ac_desc.reserve(N);
-    graph.add_factor_descriptor(&ac_desc);
+
+    // These constraints below are only added when !bInit (see the IMU link
+    // loop), so registering them during initialization leaves two descriptors with
+    // zero factors.
+    if (!bInit)
+    {
+        graph.add_factor_descriptor(&gc_desc);
+        graph.add_factor_descriptor(&ac_desc);
+    }
 
     std::cout << "Creating IMU links for FullInertialBA" << std::endl;
     // IMU links

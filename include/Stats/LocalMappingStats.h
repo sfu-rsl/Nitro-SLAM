@@ -7,6 +7,7 @@
 #include <string>
 #include <utility>
 #include <mutex>
+#include <chrono>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include "Stats/StatsInterface.h"
@@ -46,6 +47,20 @@ class LocalMappingStats: public StatsInterface {
         Series searchForTriangulation_time;
         CountSeries createdMappoints_num;
 
+        // IMU initialization, and the VIBA1/VIBA2 re-initializations after it. Each
+        // runs FullInertialBA with 100 iterations synchronously on this thread. The
+        // 100 iterations sound alarming but the map is still small at init: measured
+        // on room3 these are 25/57/72 ms against a 43 ms iteration mean, i.e. outlier
+        // iterations but not pathological ones. Recorded inside InitializeIMU(), which
+        // can be called more than once per iteration -- entries repeat the key and are
+        // summed by the consumer.
+        Series imuInit_time;
+        // The FullInertialBA portion of the above, broken out so the CPU and GPU
+        // implementations can be compared directly at this workload size.
+        Series imuInitFIBA_time;
+        // ScaleRefinement(), monocular only, same thread, same story.
+        Series scaleRefinement_time;
+
         double searchForTriangulation_init_time;
 
         // GPU bookkeeping. Unlike everything above, these two are NOT written by the
@@ -56,6 +71,23 @@ class LocalMappingStats: public StatsInterface {
         Series addCudaKeyFrame_time;
         Series eraseCudaKeyFrame_time;
         Series addFeatureVector_time;
+
+        // InitializeIMU() and ScaleRefinement() have several early returns each, so
+        // the timing is scoped rather than bracketed by hand.
+        class ScopedTimer {
+        public:
+            ScopedTimer(Series &dst, unsigned long id)
+                : mDst(dst), mId(id), mStart(std::chrono::steady_clock::now()) {}
+            ~ScopedTimer() {
+                double ms = std::chrono::duration_cast<std::chrono::duration<double, std::milli>>(
+                        std::chrono::steady_clock::now() - mStart).count();
+                mDst.emplace_back(mId, ms);
+            }
+        private:
+            Series &mDst;
+            unsigned long mId;
+            std::chrono::steady_clock::time_point mStart;
+        };
 
         void recordAddCudaKeyFrame(unsigned long id, double ms) {
             std::lock_guard<std::mutex> lock(mCudaKeyFrameMutex);
