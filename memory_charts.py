@@ -40,17 +40,24 @@ def read_series(path):
     if not os.path.isfile(path):
         return None
     cols = defaultdict(list)
+    seen = set()
     with open(path) as f:
         for row in csv.DictReader(f):
             for k, v in row.items():
-                cols[k].append(float(v) if v not in ('', None) else 0.0)
+                blank = v in ('', None)
+                cols[k].append(0.0 if blank else float(v))
+                if not blank:
+                    seen.add(k)
     if not cols.get('t_s'):
         return None
     rss = cols['cpu_rss_mib']
     end = len(rss)
     while end > 1 and rss[end - 1] <= 0.0:
         end -= 1
-    return {k: np.asarray(v[:end]) for k, v in cols.items()}
+    # A column blank in every row is a reading the sampler could not take -- the
+    # NVML gpu_* ones on a Jetson, say. Dropping it makes it absent rather than a
+    # flat line at zero, so collect() skips the run instead of plotting a fiction.
+    return {k: np.asarray(v[:end]) for k, v in cols.items() if k in seen}
 
 
 def read_summary(path):
@@ -214,9 +221,11 @@ def main():
     ap.add_argument('--version', required=True)
     ap.add_argument('--out', default='figures')
     ap.add_argument('--datasets', nargs='*')
-    ap.add_argument('--gpu-metric', default='proc', choices=['proc', 'delta', 'device'],
-                    help='proc: NVML per-process (default). delta: device-wide minus '
-                         'the pre-run baseline. device: raw device-wide total.')
+    ap.add_argument('--gpu-metric', default='proc',
+                    choices=['proc', 'delta', 'device'],
+                    help='proc: per-process, from NVML or jtop (default). delta: '
+                         'device-wide minus the pre-run baseline. device: raw '
+                         'device-wide total.')
     args = ap.parse_args()
 
     runs = find_runs(args.results, args.version)
@@ -225,7 +234,15 @@ def main():
         return 1
     data = collect(runs, args.gpu_metric)
     if not data:
-        print('no memory.csv found in any run -- was the batch run with the sampler?')
+        available = sorted({m for m in ('proc', 'delta', 'device') if collect(runs, m)})
+        if available:
+            print(f'no run has data for gpu metric "{args.gpu_metric}"; '
+                  f'try --gpu-metric {available[0]} (available: {", ".join(available)}). '
+                  f'Empty gpu_* columns mean the sampler found no GPU source -- on a '
+                  f'Jetson that is jtop.service being down, or the user not being in '
+                  f'the "jtop" group; check gpu_source in memory_summary.txt.')
+        else:
+            print('no memory.csv found in any run -- was the batch run with the sampler?')
         return 1
 
     systems = [s for s in SYSTEM_ORDER if any(k[0] == s for k in data)]
