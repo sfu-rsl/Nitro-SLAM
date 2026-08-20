@@ -56,9 +56,15 @@ MAPPING_DATA_WRAPPER::CudaKeyFrame* create(ORB_SLAM3::KeyFrame* KF) {
     ptr->setGPUAddress(ptr);
     ptr->setMemory(KF);
 
+    // Skipped on Jetson: cudaMemPrefetchAsync is unsupported on integrated Tegra
+    // GPUs, where it returns cudaErrorInvalidDevice and latches into this thread's
+    // last-error slot, so the next cudaGetLastError() blames whichever kernel
+    // launched after it. Unified memory is one physical pool there in any case.
+#ifndef DEVICE_JETSON
     int device_id;
     cudaGetDevice(&device_id);
     cudaMemPrefetchAsync(ptr, sizeof(MAPPING_DATA_WRAPPER::CudaKeyFrame), device_id);
+#endif
 
     // Another thread may have mirrored the same KeyFrame while we were filling
     // ours in; the first one published wins and our slot goes back to the pool.

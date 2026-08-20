@@ -6,6 +6,32 @@ if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
   set(CMAKE_CUDA_ARCHITECTURES native) # RTX 3000 Series -> 86, RTX 5080 -> 120
 endif()
 
+# Integrated Tegra (Jetson) GPUs report concurrentManagedAccess == 0, so
+# cudaMemPrefetchAsync is unsupported there and fails with cudaErrorInvalidDevice.
+# DEVICE_JETSON compiles those prefetch hints out. Override explicitly with
+# -DDEVICE_JETSON=ON or -DDEVICE_JETSON=OFF; with no override we detect the build
+# host and default to OFF (i.e. not a Jetson) when nothing identifies one.
+if(DEFINED DEVICE_JETSON)
+  message(STATUS "DEVICE_JETSON overridden: ${DEVICE_JETSON}")
+else()
+  set(DEVICE_JETSON OFF)
+  if(EXISTS "/etc/nv_tegra_release")
+    # Canonical JetPack/L4T marker.
+    set(DEVICE_JETSON ON)
+  elseif(EXISTS "/proc/device-tree/model")
+    # file(STRINGS) rather than file(READ): device-tree nodes are NUL-terminated.
+    file(STRINGS "/proc/device-tree/model" DEVICE_TREE_MODEL LIMIT_COUNT 1)
+    if(DEVICE_TREE_MODEL MATCHES "Jetson|Tegra")
+      set(DEVICE_JETSON ON)
+    endif()
+  endif()
+  message(STATUS "DEVICE_JETSON auto-detected: ${DEVICE_JETSON}")
+endif()
+
+if(DEVICE_JETSON)
+  add_definitions(-DDEVICE_JETSON)
+endif()
+
 
 
 IF(NOT CMAKE_BUILD_TYPE)

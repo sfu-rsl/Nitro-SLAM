@@ -23,8 +23,13 @@ public:
 
     T* slotAt(int i) { return &um_data[i]; }
 
+    // No-op on Jetson: see the note in CudaKeyFrameAllocator::create.
     void prefetchToDevice(int device_id) {
+#ifndef DEVICE_JETSON
         cudaMemPrefetchAsync(um_data, CHUNK_SIZE * sizeof(T), device_id);
+#else
+        (void)device_id;
+#endif
     }
 
     void freeRaw() { cudaFree(um_data); }
