@@ -1,6 +1,7 @@
 #include "Optimizer.h"
 #include "LIBAInterface.h"
 #include "GPUTypes.h"
+#include "Kernels/CudaUtils.h"
 
 #include <graphite/vector.hpp>
 #include <graphite/loss.hpp>
@@ -346,7 +347,7 @@ namespace ORB_SLAM3 {
     LocalInertialBAOptimizerImpl<Camera>::~LocalInertialBAOptimizerImpl() {
         for (auto& [cam_ptr, cam] : cameras) {
             if (cam) {
-                cudaFree(cam);
+                freeSharedMemory(cam);
             }
         }
         cameras.clear();
@@ -436,7 +437,7 @@ namespace ORB_SLAM3 {
             }
 
             Camera* cam;
-            cudaMallocManaged(&cam, sizeof(Camera));
+            allocateSharedMemory((void**)&cam, sizeof(Camera));
 
             std::array<FP, num_params> cam_params;
             for (size_t j = 0; j < cam_params.size(); j++) {

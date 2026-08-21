@@ -16,7 +16,7 @@ public:
 
     UnifiedChunk() {
         checkCudaError(
-            cudaMallocManaged((void**)&um_data, CHUNK_SIZE * sizeof(T)),
+            allocateSharedMemory((void**)&um_data, CHUNK_SIZE * sizeof(T)),
             "UnifiedChunk: failed to allocate unified memory"
         );
     }
@@ -32,7 +32,7 @@ public:
 #endif
     }
 
-    void freeRaw() { cudaFree(um_data); }
+    void freeRaw() { freeSharedMemory(um_data); }
 
     T* um_data;
 };

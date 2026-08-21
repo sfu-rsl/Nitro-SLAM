@@ -1,35 +1,18 @@
+#include <algorithm>
 #include <iostream>
 #include "Kernels/SearchAndFuseKernel.h"
 #include "Kernels/LoopClosingKernelController.h"
 
-void SearchAndFuseKernel::initialize()
-{
-    if (memory_is_initialized)
-        return;
-
-    size_t mapPointVecSize = 3000;
-    size_t connectedKFSize = 100;
-
-    cudaMallocHost((void**)&h_MapPoints, mapPointVecSize * sizeof(MAPPING_DATA_WRAPPER::CudaMapPoint));
-    cudaMallocHost((void**)&h_KeyFrames, connectedKFSize * sizeof(MAPPING_DATA_WRAPPER::CudaKeyFrame));
-    cudaMallocHost((void**)&h_Ow, connectedKFSize * sizeof(Eigen::Vector3f));
-    cudaMallocHost((void**)&h_Tcw, connectedKFSize * sizeof(Sophus::SE3f));
-    cudaMallocHost((void**)&bestDists, connectedKFSize * mapPointVecSize * sizeof(int));
-    cudaMallocHost((void**)&bestIdxs, connectedKFSize * mapPointVecSize * sizeof(int));
-
-    cudaMalloc(&d_MapPoints, mapPointVecSize * sizeof(MAPPING_DATA_WRAPPER::CudaMapPoint));
-    cudaMalloc(&d_KeyFrames, connectedKFSize * sizeof(MAPPING_DATA_WRAPPER::CudaKeyFrame));
-    cudaMalloc(&d_Ow, connectedKFSize * sizeof(Eigen::Vector3f));
-    cudaMalloc(&d_Tcw, connectedKFSize * sizeof(Sophus::SE3f));
-    cudaMalloc(&d_bestDists, connectedKFSize * mapPointVecSize * sizeof(int));
-    cudaMalloc(&d_bestIdxs, connectedKFSize * mapPointVecSize * sizeof(int));
-
-    memory_is_initialized = true;
+namespace {
+// Starting capacities. A loop closure occasionally fuses more than this, so
+// ensureCapacity() grows the buffers rather than overrunning them.
+constexpr size_t kInitialMapPoints = 3000;
+constexpr size_t kInitialConnectedKFs = 100;
 }
 
-void SearchAndFuseKernel::shutdown()
+void SearchAndFuseKernel::freeBuffers()
 {
-    if (!memory_is_initialized) 
+    if (mapPointCapacity == 0 && connectedKFCapacity == 0)
         return;
 
     cudaFreeHost(h_MapPoints);
@@ -45,6 +28,66 @@ void SearchAndFuseKernel::shutdown()
     cudaFree(d_bestDists);
     cudaFree(d_bestIdxs);
 
+    mapPointCapacity = 0;
+    connectedKFCapacity = 0;
+}
+
+// The buffers were previously fixed at 3000 points / 100 keyframes while launch()
+// filled and copied using the *runtime* sizes, unchecked. A larger loop closure
+// therefore wrote past the pinned host arrays and asked cudaMemcpy to write past
+// the device allocations, which fails with cudaErrorInvalidValue. Grow instead of
+// clamping: dropping points would silently corrupt the fuse result.
+void SearchAndFuseKernel::ensureCapacity(size_t numMapPoints, size_t numKFs)
+{
+    if (numMapPoints <= mapPointCapacity && numKFs <= connectedKFCapacity)
+        return;
+
+    const size_t newMapPoints = std::max(numMapPoints, std::max(mapPointCapacity * 2, kInitialMapPoints));
+    const size_t newKFs       = std::max(numKFs,       std::max(connectedKFCapacity * 2, kInitialConnectedKFs));
+
+    // Only interesting when we are actually growing past the starting capacity --
+    // that is the case that used to overrun the buffers and fail the memcpy.
+    if (mapPointCapacity != 0 || connectedKFCapacity != 0)
+        std::cout << "[SearchAndFuseKernel:] growing buffers: points "
+                  << mapPointCapacity << " -> " << newMapPoints << ", KFs "
+                  << connectedKFCapacity << " -> " << newKFs
+                  << " (needed " << numMapPoints << "/" << numKFs << ")" << std::endl;
+
+    freeBuffers();
+
+    checkCudaError(cudaMallocHost((void**)&h_MapPoints, newMapPoints * sizeof(*h_MapPoints)), "SearchAndFuseKernel: failed to allocate h_MapPoints");
+    checkCudaError(cudaMallocHost((void**)&h_KeyFrames, newKFs * sizeof(*h_KeyFrames)), "SearchAndFuseKernel: failed to allocate h_KeyFrames");
+    checkCudaError(cudaMallocHost((void**)&h_Ow, newKFs * sizeof(*h_Ow)), "SearchAndFuseKernel: failed to allocate h_Ow");
+    checkCudaError(cudaMallocHost((void**)&h_Tcw, newKFs * sizeof(*h_Tcw)), "SearchAndFuseKernel: failed to allocate h_Tcw");
+    checkCudaError(cudaMallocHost((void**)&bestDists, newKFs * newMapPoints * sizeof(int)), "SearchAndFuseKernel: failed to allocate bestDists");
+    checkCudaError(cudaMallocHost((void**)&bestIdxs, newKFs * newMapPoints * sizeof(int)), "SearchAndFuseKernel: failed to allocate bestIdxs");
+
+    checkCudaError(cudaMalloc(&d_MapPoints, newMapPoints * sizeof(*d_MapPoints)), "SearchAndFuseKernel: failed to allocate d_MapPoints");
+    checkCudaError(cudaMalloc(&d_KeyFrames, newKFs * sizeof(*d_KeyFrames)), "SearchAndFuseKernel: failed to allocate d_KeyFrames");
+    checkCudaError(cudaMalloc(&d_Ow, newKFs * sizeof(*d_Ow)), "SearchAndFuseKernel: failed to allocate d_Ow");
+    checkCudaError(cudaMalloc(&d_Tcw, newKFs * sizeof(*d_Tcw)), "SearchAndFuseKernel: failed to allocate d_Tcw");
+    checkCudaError(cudaMalloc(&d_bestDists, newKFs * newMapPoints * sizeof(int)), "SearchAndFuseKernel: failed to allocate d_bestDists");
+    checkCudaError(cudaMalloc(&d_bestIdxs, newKFs * newMapPoints * sizeof(int)), "SearchAndFuseKernel: failed to allocate d_bestIdxs");
+
+    mapPointCapacity = newMapPoints;
+    connectedKFCapacity = newKFs;
+}
+
+void SearchAndFuseKernel::initialize()
+{
+    if (memory_is_initialized)
+        return;
+
+    ensureCapacity(kInitialMapPoints, kInitialConnectedKFs);
+    memory_is_initialized = true;
+}
+
+void SearchAndFuseKernel::shutdown()
+{
+    if (!memory_is_initialized) 
+        return;
+
+    freeBuffers();
     memory_is_initialized = false;
 }
 
@@ -231,6 +274,8 @@ int SearchAndFuseKernel::launch(std::vector<ORB_SLAM3::KeyFrame*> connectedKFs, 
     int connectedKFSize = connectedKFs.size();
     size_t mapPointVecSize = vpMapPoints.size();
 
+    ensureCapacity(mapPointVecSize, (size_t)connectedKFSize);
+
 #ifdef REGISTER_LOOP_CLOSING_STATS
     std::chrono::steady_clock::time_point startCopyObjectCreation = std::chrono::steady_clock::now();
 #endif
@@ -261,7 +306,7 @@ int SearchAndFuseKernel::launch(std::vector<ORB_SLAM3::KeyFrame*> connectedKFs, 
 #endif
     
     checkCudaError(cudaMemcpy(d_MapPoints, h_MapPoints, numValidPoints * sizeof(MAPPING_DATA_WRAPPER::CudaMapPoint), cudaMemcpyHostToDevice), "Failed to copy h_MapPoints to host");
-    checkCudaError(cudaMemcpy(d_KeyFrames, h_KeyFrames, connectedKFSize * sizeof(MAPPING_DATA_WRAPPER::CudaKeyFrame), cudaMemcpyHostToDevice), "Failed to copy h_KeyFrames to host");
+    checkCudaError(cudaMemcpy(d_KeyFrames, h_KeyFrames, connectedKFSize * sizeof(*h_KeyFrames), cudaMemcpyHostToDevice), "Failed to copy h_KeyFrames to host");
     checkCudaError(cudaMemcpy(d_Ow, h_Ow, connectedKFSize * sizeof(Eigen::Vector3f), cudaMemcpyHostToDevice), "Failed to copy h_Ow to host");
     checkCudaError(cudaMemcpy(d_Tcw, h_Tcw, connectedKFSize * sizeof(Sophus::SE3f), cudaMemcpyHostToDevice), "Failed to copy h_Tcw to host");
     

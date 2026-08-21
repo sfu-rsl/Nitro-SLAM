@@ -5,6 +5,7 @@
 #include <graphite/loss.hpp>
 // #include "GPUPose.h"
 #include "GPUTypes.h"
+#include "Kernels/CudaUtils.h"
 // #include "PGOTypes.h"
 #include <graphite/solver/eigen_schur.hpp>
 #include <graphite/optimizer/levenberg_marquardt.hpp>
@@ -24,7 +25,7 @@ static std::array<Camera*, max_cameras> get_cameras(KeyFrame* pKFi, std::unorder
     constexpr size_t num_params = Camera::parameter_size;
     if (cameras.find(pKFi->mpCamera) == cameras.end()) {
         Camera* cam;
-        cudaMallocManaged(&cam, sizeof(Camera));
+        allocateSharedMemory((void**)&cam, sizeof(Camera));
         // Initialize the camera with placement new
         std::array<FP, num_params> cam_params;
         for (size_t i = 0; i < cam_params.size(); i++) {
@@ -42,7 +43,7 @@ static std::array<Camera*, max_cameras> get_cameras(KeyFrame* pKFi, std::unorder
     if (pKFi->mpCamera2) {
         if (cameras.find(pKFi->mpCamera2) == cameras.end()) {
             Camera* cam;
-            cudaMallocManaged(&cam, sizeof(Camera));
+            allocateSharedMemory((void**)&cam, sizeof(Camera));
             std::array<FP, num_params> cam_params;
             for (size_t i = 0; i < cam_params.size(); i++) {
                 cam_params[i] = pKFi->mpCamera2->getParameter(i);
@@ -274,7 +275,7 @@ void LocalInertialBAInternal(KeyFrame *pKF, bool *pbStopFlag, Map *pMap, int& nu
         std::array<Camera*, max_cameras> cams = {nullptr, nullptr};
         if (cameras.find(pKFi->mpCamera) == cameras.end()) {
             Camera* cam;
-            cudaMallocManaged(&cam, sizeof(Camera));
+            allocateSharedMemory((void**)&cam, sizeof(Camera));
             // Initialize the camera with placement new
             std::array<FP, 4> cam_params;
             for (size_t i = 0; i < cam_params.size(); i++) {
@@ -292,7 +293,7 @@ void LocalInertialBAInternal(KeyFrame *pKF, bool *pbStopFlag, Map *pMap, int& nu
         if (pKFi->mpCamera2) {
             if (cameras.find(pKFi->mpCamera2) == cameras.end()) {
                 Camera* cam;
-                cudaMallocManaged(&cam, sizeof(Camera));
+                allocateSharedMemory((void**)&cam, sizeof(Camera));
 
                 std::array<FP, 4> cam_params;
                 for (size_t i = 0; i < cam_params.size(); i++) {
@@ -885,7 +886,7 @@ void LocalInertialBAInternal(KeyFrame *pKF, bool *pbStopFlag, Map *pMap, int& nu
         // Free camera memory
         for (auto& [cam_ptr, cam] : cameras) {
             if (cam) {
-                cudaFree(cam);
+                freeSharedMemory(cam);
             }
         }
 
@@ -920,7 +921,7 @@ void LocalInertialBAInternal(KeyFrame *pKF, bool *pbStopFlag, Map *pMap, int& nu
         // VertexPose* VP = static_cast<VertexPose*>(optimizer.vertex(pKFi->mnId));
         const Pose* pose = pose_desc.get_vertex(pKFi->mnId);
         // Sophus::SE3f Tcw(VP->estimate().Rcw[0].cast<float>(), VP->estimate().tcw[0].cast<float>());
-        Sophus::SE3f Tcw(pose->Rcw[0].template cast<float>(), pose->tcw[0].template cast<float>());
+        Sophus::SE3f Tcw(Sophus::makeRotationMatrix(pose->Rcw[0]).template cast<float>(), pose->tcw[0].template cast<float>());
         pKFi->SetPose(Tcw);
         pKFi->mnBALocalForKF=0;
 
@@ -950,7 +951,7 @@ void LocalInertialBAInternal(KeyFrame *pKF, bool *pbStopFlag, Map *pMap, int& nu
         // VertexPose* VP = static_cast<VertexPose*>(optimizer.vertex(pKFi->mnId));
         // Sophus::SE3f Tcw(VP->estimate().Rcw[0].cast<float>(), VP->estimate().tcw[0].cast<float>());
         const auto VP = pose_desc.get_vertex(pKFi->mnId);
-        Sophus::SE3f Tcw(VP->Rcw[0].template cast<float>(), VP->tcw[0].template cast<float>());
+        Sophus::SE3f Tcw(Sophus::makeRotationMatrix(VP->Rcw[0]).template cast<float>(), VP->tcw[0].template cast<float>());
 
         pKFi->SetPose(Tcw);
         pKFi->mnBALocalForKF=0;
@@ -975,7 +976,7 @@ void LocalInertialBAInternal(KeyFrame *pKF, bool *pbStopFlag, Map *pMap, int& nu
     // Deallocate cameras
     for (auto& [cam_ptr, cam] : cameras) {
         if (cam) {
-            cudaFree(cam);
+            freeSharedMemory(cam);
         }
     }
 

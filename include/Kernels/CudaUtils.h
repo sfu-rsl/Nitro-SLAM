@@ -44,6 +44,20 @@ class CudaUtils {
 };
 
 void checkCudaError(cudaError_t err, const char* msg);
+
+// Shared host/device allocation.
+//
+// Integrated Tegra parts report concurrentManagedAccess == 0, which makes it
+// illegal for the host to touch cudaMallocManaged memory while ANY kernel is
+// running -- the access segfaults immediately, with no CUDA error reported.
+// Nitro-SLAM keeps kernels in flight from the tracking, local-mapping and
+// loop-closing threads at once, so host-side reads/writes of managed buffers
+// fault at essentially random points. Pinned mapped memory is physically shared
+// on Tegra, reachable from the device through the same address
+// (unifiedAddressing == 1), and carries no such concurrency restriction, so
+// DEVICE_JETSON builds use that instead. Elsewhere this is plain managed memory.
+cudaError_t allocateSharedMemory(void** ptr, size_t size);
+cudaError_t freeSharedMemory(void* ptr);
 __device__ int DescriptorDistance(const uint8_t *a, const uint8_t *b);
 
 void printKeyframeCPU(ORB_SLAM3::KeyFrame* KF);

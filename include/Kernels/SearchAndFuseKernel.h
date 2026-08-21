@@ -31,7 +31,16 @@ public:
     int origDescriptorDistance(const cv::Mat &a, const cv::Mat &b);
 
 private:
+    // Grow the staging/device buffers to fit this loop closure. Capacities used to
+    // be fixed at 3000 points / 100 keyframes with no check against the runtime
+    // sizes, which overran both the pinned host arrays and the device allocations.
+    void ensureCapacity(size_t numMapPoints, size_t numKFs);
+    void freeBuffers();
+
+private:
     bool memory_is_initialized;
+    size_t mapPointCapacity = 0;
+    size_t connectedKFCapacity = 0;
     int *d_bestDists, *d_bestIdxs;
     int *bestDists, *bestIdxs;
     MAPPING_DATA_WRAPPER::CudaMapPoint *h_MapPoints, *d_MapPoints;

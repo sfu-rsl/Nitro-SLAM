@@ -6116,7 +6116,10 @@ void LocalInertialBA2(KeyFrame *pKF, bool *pbStopFlag, Map *pMap, int& num_fixed
         KeyFrame* pKFi = vpOptimizableKFs[i];
 
         const auto pose = optimizer.get_pose(pKFi->mnId);
-        Sophus::SE3f Tcw(pose.Rcw.cast<float>(), pose.tcw.cast<float>());
+        // The optimizer works in double and hands back rotations a few ulps off
+        // orthogonal; constructing an SO3f checks against a float epsilon (~1e-5)
+        // and aborts. makeRotationMatrix re-projects onto SO(3), determinant included.
+        Sophus::SE3f Tcw(Sophus::makeRotationMatrix(pose.Rcw).cast<float>(), pose.tcw.cast<float>());
         pKFi->SetPose(Tcw);
         pKFi->mnBALocalForKF=0;
 
@@ -6138,7 +6141,7 @@ void LocalInertialBA2(KeyFrame *pKF, bool *pbStopFlag, Map *pMap, int& num_fixed
     {
         KeyFrame* pKFi = *it;
         const auto pose = optimizer.get_pose(pKFi->mnId);
-        Sophus::SE3f Tcw(pose.Rcw.cast<float>(), pose.tcw.cast<float>());
+        Sophus::SE3f Tcw(Sophus::makeRotationMatrix(pose.Rcw).cast<float>(), pose.tcw.cast<float>());
         pKFi->SetPose(Tcw);
         pKFi->mnBALocalForKF=0;
     }
@@ -6441,7 +6444,7 @@ void OptimizeEssentialGraph4DoF(Map* pMap, KeyFrame* pLoopKF, KeyFrame* pCurKF,
 
         auto pose = optimizer.get_pose(nIDi);
 
-        g2o::Sim3 CorrectedSiw = g2o::Sim3(pose.R,pose.t,1.);
+        g2o::Sim3 CorrectedSiw = g2o::Sim3(Sophus::makeRotationMatrix(pose.R),pose.t,1.);
         vCorrectedSwc[nIDi]=CorrectedSiw.inverse();
 
         Sophus::SE3d Tiw(CorrectedSiw.rotation(),CorrectedSiw.translation());

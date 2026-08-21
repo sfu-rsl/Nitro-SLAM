@@ -105,6 +105,22 @@ void checkCudaError(cudaError_t err, const char* msg) {
     }
 }
 
+cudaError_t allocateSharedMemory(void** ptr, size_t size) {
+#ifdef DEVICE_JETSON
+    return cudaHostAlloc(ptr, size, cudaHostAllocMapped);
+#else
+    return cudaMallocManaged(ptr, size);
+#endif
+}
+
+cudaError_t freeSharedMemory(void* ptr) {
+#ifdef DEVICE_JETSON
+    return cudaFreeHost(ptr);
+#else
+    return cudaFree(ptr);
+#endif
+}
+
 void CudaUtils::loadSetting(int _nFeatures, int _nLevels, bool _isMonocular, float _scaleFactor, int _nCols, int _nRows, bool _cameraIsFisheye){
     nFeatures_with_th = _nFeatures + N_FEATURES_TH;
     nLevels = _nLevels;

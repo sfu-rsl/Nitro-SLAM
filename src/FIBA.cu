@@ -5,6 +5,7 @@
 #include <graphite/loss.hpp>
 // #include "GPUPose.h"
 #include "GPUTypes.h"
+#include "Kernels/CudaUtils.h"
 // #include "PGOTypes.h"
 #include <graphite/solver/eigen_schur.hpp>
 #include <graphite/solver/cudss_schur.hpp>
@@ -27,7 +28,7 @@ static std::array<Camera*, max_cameras> get_cameras(KeyFrame* pKFi, std::unorder
     constexpr size_t num_params = Camera::parameter_size;
     if (cameras.find(pKFi->mpCamera) == cameras.end()) {
         Camera* cam;
-        cudaMallocManaged(&cam, sizeof(Camera));
+        allocateSharedMemory((void**)&cam, sizeof(Camera));
         // Initialize the camera with placement new
         std::array<FP, num_params> cam_params;
         for (size_t i = 0; i < cam_params.size(); i++) {
@@ -45,7 +46,7 @@ static std::array<Camera*, max_cameras> get_cameras(KeyFrame* pKFi, std::unorder
     if (pKFi->mpCamera2) {
         if (cameras.find(pKFi->mpCamera2) == cameras.end()) {
             Camera* cam;
-            cudaMallocManaged(&cam, sizeof(Camera));
+            allocateSharedMemory((void**)&cam, sizeof(Camera));
             std::array<FP, num_params> cam_params;
             for (size_t i = 0; i < cam_params.size(); i++) {
                 cam_params[i] = pKFi->mpCamera2->getParameter(i);
@@ -120,7 +121,7 @@ void FullInertialBAInternal(bool use_pcg, Map *pMap, int its, const bool bFixLoc
         for (auto& kv : cameras) {
             auto* cam = kv.second;
             if (cam) {
-                cudaFree(cam);
+                freeSharedMemory(cam);
                 kv.second = nullptr;
             }
         }
@@ -677,13 +678,13 @@ void FullInertialBAInternal(bool use_pcg, Map *pMap, int its, const bool bFixLoc
         if(nLoopId==0)
         {
             // Sophus::SE3f Tcw(VP->estimate().Rcw[0].cast<float>(), VP->estimate().tcw[0].cast<float>());
-            Sophus::SE3f Tcw(pose->Rcw[0].template cast<float>(), pose->tcw[0].template cast<float>());
+            Sophus::SE3f Tcw(Sophus::makeRotationMatrix(pose->Rcw[0]).template cast<float>(), pose->tcw[0].template cast<float>());
             pKFi->SetPose(Tcw);
         }
         else
         {
             // pKFi->mTcwGBA = Sophus::SE3f(VP->estimate().Rcw[0].cast<float>(),VP->estimate().tcw[0].cast<float>());
-            pKFi->mTcwGBA = Sophus::SE3f(pose->Rcw[0].template cast<float>(), pose->tcw[0].template cast<float>());
+            pKFi->mTcwGBA = Sophus::SE3f(Sophus::makeRotationMatrix(pose->Rcw[0]).template cast<float>(), pose->tcw[0].template cast<float>());
             pKFi->mnBAGlobalForKF = nLoopId;
 
         }
