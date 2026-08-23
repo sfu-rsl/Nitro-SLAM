@@ -84,7 +84,8 @@ def figure_comparison(agg, spec, phases, datasets, systems, out_path, n_expected
     cmap = colors_for(labels)
 
     # With the system read off the fill, a group need only be as wide as its bars.
-    fig, ax = plt.subplots(figsize=(1.05 * len(datasets) + 2.6, 4.0))
+    # fig, ax = plt.subplots(figsize=(1.05 * len(datasets) + 2.6, 4.0))
+    fig, ax = plt.subplots(figsize=(5.0, 4.0))
     fig.patch.set_facecolor(SURFACE)
     span = max(sum(agg[k]['phases'].values()) for k in keys)
 
