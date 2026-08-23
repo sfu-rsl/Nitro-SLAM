@@ -2,6 +2,7 @@
 #include <omp.h>
 #include <memory.h>
 #include <csignal> 
+#include <sstream>
 
 
 void SearchLocalPointsKernel::initialize() {
@@ -357,8 +358,10 @@ void SearchLocalPointsKernel::launch(ORB_SLAM3::Frame &F, const vector<ORB_SLAM3
 
     int numPoints = vmp.size();
     if(numPoints > MAX_NUM_MAPPOINTS) {
-        cout << "[ERROR] SearchLocalPointsKernel::launchKernel: ] number of mappoints: " << numPoints << " is greater than MAX_NUM_MAPPOINTS: " << MAX_NUM_MAPPOINTS << "\n";
-        exit(EXIT_FAILURE);
+        std::ostringstream out;
+        out << "SearchLocalPointsKernel::launch: " << numPoints
+            << " map points exceeds MAX_NUM_MAPPOINTS " << MAX_NUM_MAPPOINTS;
+        fatalError(out.str().c_str());
     }
 
 #ifdef REGISTER_TRACKING_STATS

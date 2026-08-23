@@ -1,3 +1,8 @@
+#include <cstdlib>
+#include <mutex>
+#include <sstream>
+#include <thread>
+
 #include "Kernels/CudaUtils.h"
 #include "Kernels/TrackingKernelController.h"
 #include "Kernels/MappingKernelController.h"
@@ -89,20 +94,35 @@ __global__ void printMPListGPU(MAPPING_DATA_WRAPPER::CudaMapPoint* d_mapPoints, 
     printMPGPU(&mp);
 }
 
-void checkCudaError(cudaError_t err, const char* msg) {
-    if (err != cudaSuccess) {
-        std::cerr << msg << ": " << cudaGetErrorString(err) << ", status code: " << err << std::endl;
-        
-        if (TrackingKernelController::is_active)
-            TrackingKernelController::shutdownKernels();
-        if (MappingKernelController::is_active)
-            MappingKernelController::shutdownKernels(true, true);
-        if (LoopClosingKernelController::is_active)
-            LoopClosingKernelController::shutdownKernels(true, true);
-        // CudaUtils::shutdown();
+namespace {
+// Held through the exit below, so a second thread failing at the same moment blocks
+// here rather than interleaving with or truncating the first thread's message. That
+// happens in practice: a loop-closure failure on the loop-closing thread and a
+// follow-on failure on the tracking thread arrive together.
+std::mutex g_fatalMutex;
+}
 
-        exit(EXIT_FAILURE);
-    }
+void fatalError(const char* msg) {
+    g_fatalMutex.lock();
+
+    std::ostringstream tid;
+    tid << std::this_thread::get_id();
+    std::cerr << "[FATAL] " << msg << " (thread " << tid.str() << ")" << std::endl;
+    std::cerr.flush();
+    std::cout.flush();
+
+    // _Exit rather than exit: static destructors and atexit handlers would other-
+    // wise run while the other threads are still live inside CUDA.
+    std::_Exit(EXIT_FAILURE);
+}
+
+void checkCudaError(cudaError_t err, const char* msg) {
+    if (err == cudaSuccess)
+        return;
+
+    std::ostringstream out;
+    out << msg << ": " << cudaGetErrorString(err) << ", status code: " << err;
+    fatalError(out.str().c_str());
 }
 
 cudaError_t allocateSharedMemory(void** ptr, size_t size) {

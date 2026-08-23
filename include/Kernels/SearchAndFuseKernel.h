@@ -39,8 +39,9 @@ private:
 
 private:
     bool memory_is_initialized;
-    size_t mapPointCapacity = 0;
-    size_t connectedKFCapacity = 0;
+    size_t mapPointCapacity = 0;     // h_MapPoints, d_MapPoints
+    size_t connectedKFCapacity = 0;  // h/d_KeyFrames, h/d_Ow, h/d_Tcw
+    size_t pairCapacity = 0;         // bestDists, bestIdxs (numPoints * numKFs)
     int *d_bestDists, *d_bestIdxs;
     int *bestDists, *bestIdxs;
     MAPPING_DATA_WRAPPER::CudaMapPoint *h_MapPoints, *d_MapPoints;

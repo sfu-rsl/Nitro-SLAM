@@ -12,65 +12,85 @@ constexpr size_t kInitialConnectedKFs = 100;
 
 void SearchAndFuseKernel::freeBuffers()
 {
-    if (mapPointCapacity == 0 && connectedKFCapacity == 0)
-        return;
-
-    cudaFreeHost(h_MapPoints);
-    cudaFreeHost(h_KeyFrames);
-    cudaFreeHost(h_Ow);
-    cudaFreeHost(h_Tcw);
-    cudaFreeHost(bestDists);
-    cudaFreeHost(bestIdxs);
-    cudaFree(d_MapPoints);
-    cudaFree(d_KeyFrames);
-    cudaFree(d_Ow);
-    cudaFree(d_Tcw);
-    cudaFree(d_bestDists);
-    cudaFree(d_bestIdxs);
-
-    mapPointCapacity = 0;
-    connectedKFCapacity = 0;
+    if (mapPointCapacity != 0) {
+        cudaFreeHost(h_MapPoints);
+        cudaFree(d_MapPoints);
+        mapPointCapacity = 0;
+    }
+    if (connectedKFCapacity != 0) {
+        cudaFreeHost(h_KeyFrames);
+        cudaFreeHost(h_Ow);
+        cudaFreeHost(h_Tcw);
+        cudaFree(d_KeyFrames);
+        cudaFree(d_Ow);
+        cudaFree(d_Tcw);
+        connectedKFCapacity = 0;
+    }
+    if (pairCapacity != 0) {
+        cudaFreeHost(bestDists);
+        cudaFreeHost(bestIdxs);
+        cudaFree(d_bestDists);
+        cudaFree(d_bestIdxs);
+        pairCapacity = 0;
+    }
 }
 
 // The buffers were previously fixed at 3000 points / 100 keyframes while launch()
 // filled and copied using the *runtime* sizes, unchecked. A larger loop closure
-// therefore wrote past the pinned host arrays and asked cudaMemcpy to write past
-// the device allocations, which fails with cudaErrorInvalidValue. Grow instead of
-// clamping: dropping points would silently corrupt the fuse result.
+// therefore wrote past the pinned host arrays and asked cudaMemcpy to write past the
+// device allocations, which fails with cudaErrorInvalidValue. Grow instead of clamping:
+// dropping points would silently corrupt the fuse result.
+//
+// The three groups grow independently. The kernel indexes bestDists/bestIdxs as
+// numPoints * numKFs, but sizing them as mapPointCapacity * connectedKFCapacity would
+// multiply two worst cases that do not co-occur -- observed loop closures need ~3700
+// points against only ~17 keyframes.
 void SearchAndFuseKernel::ensureCapacity(size_t numMapPoints, size_t numKFs)
 {
-    if (numMapPoints <= mapPointCapacity && numKFs <= connectedKFCapacity)
-        return;
+    const size_t pairsNeeded = numMapPoints * numKFs;
 
-    const size_t newMapPoints = std::max(numMapPoints, std::max(mapPointCapacity * 2, kInitialMapPoints));
-    const size_t newKFs       = std::max(numKFs,       std::max(connectedKFCapacity * 2, kInitialConnectedKFs));
+    if (numMapPoints > mapPointCapacity) {
+        const size_t n = std::max(numMapPoints, std::max(mapPointCapacity * 2, kInitialMapPoints));
+        if (mapPointCapacity != 0)
+            std::cout << "[SearchAndFuseKernel:] growing map-point buffers: " << mapPointCapacity
+                      << " -> " << n << " (needed " << numMapPoints << ")" << std::endl;
+        if (mapPointCapacity != 0) { cudaFreeHost(h_MapPoints); cudaFree(d_MapPoints); }
+        checkCudaError(cudaMallocHost((void**)&h_MapPoints, n * sizeof(*h_MapPoints)), "SearchAndFuseKernel: failed to allocate h_MapPoints");
+        checkCudaError(cudaMalloc(&d_MapPoints, n * sizeof(*d_MapPoints)), "SearchAndFuseKernel: failed to allocate d_MapPoints");
+        mapPointCapacity = n;
+    }
 
-    // Only interesting when we are actually growing past the starting capacity --
-    // that is the case that used to overrun the buffers and fail the memcpy.
-    if (mapPointCapacity != 0 || connectedKFCapacity != 0)
-        std::cout << "[SearchAndFuseKernel:] growing buffers: points "
-                  << mapPointCapacity << " -> " << newMapPoints << ", KFs "
-                  << connectedKFCapacity << " -> " << newKFs
-                  << " (needed " << numMapPoints << "/" << numKFs << ")" << std::endl;
+    if (numKFs > connectedKFCapacity) {
+        const size_t n = std::max(numKFs, std::max(connectedKFCapacity * 2, kInitialConnectedKFs));
+        if (connectedKFCapacity != 0) {
+            std::cout << "[SearchAndFuseKernel:] growing keyframe buffers: " << connectedKFCapacity
+                      << " -> " << n << " (needed " << numKFs << ")" << std::endl;
+            cudaFreeHost(h_KeyFrames); cudaFreeHost(h_Ow); cudaFreeHost(h_Tcw);
+            cudaFree(d_KeyFrames); cudaFree(d_Ow); cudaFree(d_Tcw);
+        }
+        checkCudaError(cudaMallocHost((void**)&h_KeyFrames, n * sizeof(*h_KeyFrames)), "SearchAndFuseKernel: failed to allocate h_KeyFrames");
+        checkCudaError(cudaMallocHost((void**)&h_Ow, n * sizeof(*h_Ow)), "SearchAndFuseKernel: failed to allocate h_Ow");
+        checkCudaError(cudaMallocHost((void**)&h_Tcw, n * sizeof(*h_Tcw)), "SearchAndFuseKernel: failed to allocate h_Tcw");
+        checkCudaError(cudaMalloc(&d_KeyFrames, n * sizeof(*d_KeyFrames)), "SearchAndFuseKernel: failed to allocate d_KeyFrames");
+        checkCudaError(cudaMalloc(&d_Ow, n * sizeof(*d_Ow)), "SearchAndFuseKernel: failed to allocate d_Ow");
+        checkCudaError(cudaMalloc(&d_Tcw, n * sizeof(*d_Tcw)), "SearchAndFuseKernel: failed to allocate d_Tcw");
+        connectedKFCapacity = n;
+    }
 
-    freeBuffers();
-
-    checkCudaError(cudaMallocHost((void**)&h_MapPoints, newMapPoints * sizeof(*h_MapPoints)), "SearchAndFuseKernel: failed to allocate h_MapPoints");
-    checkCudaError(cudaMallocHost((void**)&h_KeyFrames, newKFs * sizeof(*h_KeyFrames)), "SearchAndFuseKernel: failed to allocate h_KeyFrames");
-    checkCudaError(cudaMallocHost((void**)&h_Ow, newKFs * sizeof(*h_Ow)), "SearchAndFuseKernel: failed to allocate h_Ow");
-    checkCudaError(cudaMallocHost((void**)&h_Tcw, newKFs * sizeof(*h_Tcw)), "SearchAndFuseKernel: failed to allocate h_Tcw");
-    checkCudaError(cudaMallocHost((void**)&bestDists, newKFs * newMapPoints * sizeof(int)), "SearchAndFuseKernel: failed to allocate bestDists");
-    checkCudaError(cudaMallocHost((void**)&bestIdxs, newKFs * newMapPoints * sizeof(int)), "SearchAndFuseKernel: failed to allocate bestIdxs");
-
-    checkCudaError(cudaMalloc(&d_MapPoints, newMapPoints * sizeof(*d_MapPoints)), "SearchAndFuseKernel: failed to allocate d_MapPoints");
-    checkCudaError(cudaMalloc(&d_KeyFrames, newKFs * sizeof(*d_KeyFrames)), "SearchAndFuseKernel: failed to allocate d_KeyFrames");
-    checkCudaError(cudaMalloc(&d_Ow, newKFs * sizeof(*d_Ow)), "SearchAndFuseKernel: failed to allocate d_Ow");
-    checkCudaError(cudaMalloc(&d_Tcw, newKFs * sizeof(*d_Tcw)), "SearchAndFuseKernel: failed to allocate d_Tcw");
-    checkCudaError(cudaMalloc(&d_bestDists, newKFs * newMapPoints * sizeof(int)), "SearchAndFuseKernel: failed to allocate d_bestDists");
-    checkCudaError(cudaMalloc(&d_bestIdxs, newKFs * newMapPoints * sizeof(int)), "SearchAndFuseKernel: failed to allocate d_bestIdxs");
-
-    mapPointCapacity = newMapPoints;
-    connectedKFCapacity = newKFs;
+    if (pairsNeeded > pairCapacity) {
+        const size_t n = std::max(pairsNeeded, std::max(pairCapacity * 2, kInitialMapPoints * kInitialConnectedKFs));
+        if (pairCapacity != 0) {
+            std::cout << "[SearchAndFuseKernel:] growing pair buffers: " << pairCapacity
+                      << " -> " << n << " (needed " << pairsNeeded << ")" << std::endl;
+            cudaFreeHost(bestDists); cudaFreeHost(bestIdxs);
+            cudaFree(d_bestDists); cudaFree(d_bestIdxs);
+        }
+        checkCudaError(cudaMallocHost((void**)&bestDists, n * sizeof(int)), "SearchAndFuseKernel: failed to allocate bestDists");
+        checkCudaError(cudaMallocHost((void**)&bestIdxs, n * sizeof(int)), "SearchAndFuseKernel: failed to allocate bestIdxs");
+        checkCudaError(cudaMalloc(&d_bestDists, n * sizeof(int)), "SearchAndFuseKernel: failed to allocate d_bestDists");
+        checkCudaError(cudaMalloc(&d_bestIdxs, n * sizeof(int)), "SearchAndFuseKernel: failed to allocate d_bestIdxs");
+        pairCapacity = n;
+    }
 }
 
 void SearchAndFuseKernel::initialize()

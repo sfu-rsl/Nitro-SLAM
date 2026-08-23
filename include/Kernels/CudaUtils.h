@@ -43,6 +43,15 @@ class CudaUtils {
         static bool cameraIsFisheye;
 };
 
+// Report an unrecoverable error and stop the process immediately.
+//
+// Deliberately does NOT tear down kernel memory. The failing thread does not own
+// the GPU buffers -- tracking, local mapping and loop closing all run at once --
+// so freeing them here left the other threads reading freed memory, and the
+// segfault that followed is what surfaced instead of the message. Nothing needs
+// releasing on a fatal path anyway: the driver reclaims everything at exit.
+[[noreturn]] void fatalError(const char* msg);
+
 void checkCudaError(cudaError_t err, const char* msg);
 
 // Shared host/device allocation.

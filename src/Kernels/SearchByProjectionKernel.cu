@@ -1,49 +1,75 @@
+#include <algorithm>
 #include <iostream>
 #include "Kernels/SearchByProjectionKernel.h"
 #include <omp.h>
 
-// The map-point buffers below are preallocated once at this capacity, but every
-// launch path fills them with vpPoints.size() entries and never checks. Instrumented
-// to find out whether the caller actually exceeds it - if it does, the writes run off
-// the end of pinned host memory and the match counts come back corrupted.
-// All launch paths run on the loop closing thread, so these counters need no locking.
+// Starting capacity for the map-point buffers. Every launch path fills them with
+// vpPoints.size() entries; ensureMapPointCapacity() grows them rather than running
+// off the end of pinned host memory and past the device allocations.
+// All launch paths run on the loop closing thread, so this needs no locking.
 static const size_t kMapPointCapacity = 4100;
 static size_t g_maxMapPointVecSize = 0;
-static unsigned long g_mapPointOverflowCount = 0;
-
-static void checkMapPointCapacity(const char* where, size_t n)
-{
-    if (n > g_maxMapPointVecSize)
-        g_maxMapPointVecSize = n;
-    if (n > kMapPointCapacity) {
-        g_mapPointOverflowCount++;
-        std::cout << "[SearchByProjectionKernel:] CAPACITY EXCEEDED in " << where
-                  << ": vpPoints.size()=" << n << " > capacity " << kMapPointCapacity
-                  << " (overflow #" << g_mapPointOverflowCount << ")" << std::endl;
-    }
-}
 
 void SearchByProjectionKernel::initialize(){
     if (memory_is_initialized)
         return;
 
-    size_t mapPointVecSize = kMapPointCapacity;
-    cudaMallocHost((void**)&h_MapPoints, mapPointVecSize * sizeof(MAPPING_DATA_WRAPPER::CudaMapPoint));
-    cudaMallocHost((void**)&bestDists, 3 * mapPointVecSize * sizeof(int));
-    cudaMallocHost((void**)&bestIdxs, 3 * mapPointVecSize * sizeof(int));
-    cudaMallocHost((void**)&h_KeyFrames, 3 * sizeof(MAPPING_DATA_WRAPPER::CudaKeyFrame));
-    cudaMallocHost((void**)&h_Ow, 3 * sizeof(Eigen::Vector3f));
-    cudaMallocHost((void**)&h_Tcw, 3 * sizeof(Sophus::SE3f));
+    ensureMapPointCapacity(kMapPointCapacity);
 
-    cudaMalloc(&d_MapPoints, mapPointVecSize * sizeof(MAPPING_DATA_WRAPPER::CudaMapPoint));
-    cudaMalloc(&d_KeyFrame, sizeof(MAPPING_DATA_WRAPPER::CudaKeyFrame));
-    cudaMalloc(&d_bestDists, 3 * mapPointVecSize * sizeof(int));
-    cudaMalloc(&d_bestIdxs, 3 * mapPointVecSize * sizeof(int));
-    cudaMalloc(&d_KeyFrames, 3 * sizeof(MAPPING_DATA_WRAPPER::CudaKeyFrame));
-    cudaMalloc(&d_Ow, 3 * sizeof(Eigen::Vector3f));
-    cudaMalloc(&d_Tcw, 3 * sizeof(Sophus::SE3f));
+    // These stay fixed at 3: the caller bounds the covisible-keyframe count with
+    // covKFsSize = std::min<size_t>(3, ...) (LoopClosing.cc), so 3 is a guarantee
+    // rather than an estimate.
+    checkCudaError(cudaMallocHost((void**)&h_KeyFrames, 3 * sizeof(*h_KeyFrames)), "SearchByProjectionKernel: failed to allocate h_KeyFrames");
+    checkCudaError(cudaMallocHost((void**)&h_Ow, 3 * sizeof(*h_Ow)), "SearchByProjectionKernel: failed to allocate h_Ow");
+    checkCudaError(cudaMallocHost((void**)&h_Tcw, 3 * sizeof(*h_Tcw)), "SearchByProjectionKernel: failed to allocate h_Tcw");
+
+    checkCudaError(cudaMalloc(&d_KeyFrame, sizeof(MAPPING_DATA_WRAPPER::CudaKeyFrame)), "SearchByProjectionKernel: failed to allocate d_KeyFrame");
+    checkCudaError(cudaMalloc(&d_KeyFrames, 3 * sizeof(*d_KeyFrames)), "SearchByProjectionKernel: failed to allocate d_KeyFrames");
+    checkCudaError(cudaMalloc(&d_Ow, 3 * sizeof(*d_Ow)), "SearchByProjectionKernel: failed to allocate d_Ow");
+    checkCudaError(cudaMalloc(&d_Tcw, 3 * sizeof(*d_Tcw)), "SearchByProjectionKernel: failed to allocate d_Tcw");
 
     memory_is_initialized = true;
+}
+
+void SearchByProjectionKernel::freeMapPointBuffers()
+{
+    if (mapPointCapacity == 0)
+        return;
+    cudaFreeHost(h_MapPoints);
+    cudaFreeHost(bestDists);
+    cudaFreeHost(bestIdxs);
+    cudaFree(d_MapPoints);
+    cudaFree(d_bestDists);
+    cudaFree(d_bestIdxs);
+    mapPointCapacity = 0;
+}
+
+// bestDists/bestIdxs are indexed as 3 * numPoints by the kernels, hence the factor.
+void SearchByProjectionKernel::ensureMapPointCapacity(size_t numMapPoints)
+{
+    if (numMapPoints > g_maxMapPointVecSize)
+        g_maxMapPointVecSize = numMapPoints;
+
+    if (numMapPoints <= mapPointCapacity)
+        return;
+
+    const size_t newCapacity = std::max(numMapPoints, std::max(mapPointCapacity * 2, kMapPointCapacity));
+
+    if (mapPointCapacity != 0)
+        std::cout << "[SearchByProjectionKernel:] growing map-point buffers: "
+                  << mapPointCapacity << " -> " << newCapacity
+                  << " (needed " << numMapPoints << ")" << std::endl;
+
+    freeMapPointBuffers();
+
+    checkCudaError(cudaMallocHost((void**)&h_MapPoints, newCapacity * sizeof(*h_MapPoints)), "SearchByProjectionKernel: failed to allocate h_MapPoints");
+    checkCudaError(cudaMallocHost((void**)&bestDists, 3 * newCapacity * sizeof(int)), "SearchByProjectionKernel: failed to allocate bestDists");
+    checkCudaError(cudaMallocHost((void**)&bestIdxs, 3 * newCapacity * sizeof(int)), "SearchByProjectionKernel: failed to allocate bestIdxs");
+    checkCudaError(cudaMalloc(&d_MapPoints, newCapacity * sizeof(*d_MapPoints)), "SearchByProjectionKernel: failed to allocate d_MapPoints");
+    checkCudaError(cudaMalloc(&d_bestDists, 3 * newCapacity * sizeof(int)), "SearchByProjectionKernel: failed to allocate d_bestDists");
+    checkCudaError(cudaMalloc(&d_bestIdxs, 3 * newCapacity * sizeof(int)), "SearchByProjectionKernel: failed to allocate d_bestIdxs");
+
+    mapPointCapacity = newCapacity;
 }
 
 void SearchByProjectionKernel::shutdown() {
@@ -51,20 +77,15 @@ void SearchByProjectionKernel::shutdown() {
         return;
 
     std::cout << "[SearchByProjectionKernel:] map-point high-water mark: "
-              << g_maxMapPointVecSize << " / capacity " << kMapPointCapacity
-              << "  (overflows: " << g_mapPointOverflowCount << ")" << std::endl;
+              << g_maxMapPointVecSize << " / capacity " << mapPointCapacity << std::endl;
 
-    cudaFreeHost(h_MapPoints);
-    cudaFreeHost(bestDists);
-    cudaFreeHost(bestIdxs);
+    freeMapPointBuffers();
+
     cudaFreeHost(h_KeyFrames);
     cudaFreeHost(h_Ow);
     cudaFreeHost(h_Tcw);
 
-    cudaFree(d_MapPoints);
     cudaFree(d_KeyFrame);
-    cudaFree(d_bestDists);
-    cudaFree(d_bestIdxs);
     cudaFree(d_KeyFrames);
     cudaFree(d_Ow);
     cudaFree(d_Tcw);
@@ -666,7 +687,7 @@ int SearchByProjectionKernel::launch(ORB_SLAM3::KeyFrame* pKF, Sophus::Sim3<floa
     int nmatches=0;
 
     size_t mapPointVecSize = vpPoints.size();
-    checkMapPointCapacity("launch(vpPointsKFs)", mapPointVecSize);
+    ensureMapPointCapacity(mapPointVecSize);
 
     Sophus::SE3f Tcw = Sophus::SE3f(Scw.rotationMatrix(),Scw.translation()/Scw.scale());
     Eigen::Vector3f Ow = Tcw.inverse().translation();
@@ -778,7 +799,7 @@ int SearchByProjectionKernel::launch(ORB_SLAM3::KeyFrame* pKF, Sophus::Sim3<floa
     int nmatches=0;
 
     size_t mapPointVecSize = vpPoints.size();
-    checkMapPointCapacity("launch(single)", mapPointVecSize);
+    ensureMapPointCapacity(mapPointVecSize);
 
 
     Sophus::SE3f Tcw = Sophus::SE3f(Scw.rotationMatrix(),Scw.translation()/Scw.scale());
@@ -896,7 +917,7 @@ void SearchByProjectionKernel::mergedlaunch(ORB_SLAM3::KeyFrame* pKF, const std:
     numProjMatches = 0;
 
     size_t mapPointVecSize = vpPoints.size();
-    checkMapPointCapacity("mergedlaunch(pKF)", mapPointVecSize);
+    ensureMapPointCapacity(mapPointVecSize);
     
     Sophus::SE3f Tcw1 = Sophus::SE3f(Scw1.rotationMatrix(),Scw1.translation()/Scw1.scale());
     Eigen::Vector3f Ow1 = Tcw1.inverse().translation();
@@ -1024,7 +1045,7 @@ void SearchByProjectionKernel::mergedlaunch(vector<ORB_SLAM3::KeyFrame*> current
     const int TH_LOW = 50;
 
     size_t mapPointVecSize = vpPoints.size();
-    checkMapPointCapacity("mergedlaunch(covKFs)", mapPointVecSize);
+    ensureMapPointCapacity(mapPointVecSize);
 
     for (size_t i = 0; i<covKFsSize; i++) {
         h_Tcw[i] = Sophus::SE3f(currentCovmScws[i].rotationMatrix(),currentCovmScws[i].translation()/currentCovmScws[i].scale());

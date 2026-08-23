@@ -1,47 +1,105 @@
+#include <algorithm>
 #include <iostream>
+#include <sstream>
 #include "Kernels/FuseKernel.h"
 #include "Kernels/MappingKernelController.h"
+
+void FuseKernel::freeBuffers() {
+    if (neighKFCapacity != 0) {
+        checkCudaError(cudaFree(d_neighKFs),"Failed to free fuse kernel memory: d_neighKFs");
+        checkCudaError(cudaFree(d_Tcw),"Failed to free fuse kernel memory: d_Tcw");
+        checkCudaError(cudaFree(d_TcwRight),"Failed to free fuse kernel memory: d_TcwRight");
+        checkCudaError(cudaFree(d_Ow),"Failed to free fuse kernel memory: d_Ow");
+        checkCudaError(cudaFree(d_OwRight),"Failed to free fuse kernel memory: d_OwRight");
+        neighKFCapacity = 0;
+    }
+    if (mapPointCapacity != 0) {
+        checkCudaError(cudaFree(d_currKFMapPoints),"Failed to free fuse kernel memory: d_currKFMapPoints");
+        mapPointCapacity = 0;
+    }
+    if (pairCapacity != 0) {
+        checkCudaError(cudaFree(d_bestDists),"Failed to free fuse kernel memory: d_bestDists");
+        checkCudaError(cudaFree(d_bestIdxs),"Failed to free fuse kernel memory: d_bestIdxs");
+        pairCapacity = 0;
+    }
+}
+
+// launchV2 copies neighKFs.size() keyframes and numValidPoints map points, so both have
+// to fit before the copies run; the kernel then indexes bestDists/bestIdxs as
+// numPoints * numKFs (keyframes doubled for fisheye, which processes left and right).
+//
+// The three are grown independently on purpose. Sizing the pair buffers as
+// kfCapacity * pointCapacity would multiply two worst cases that never co-occur: the
+// large-numPoints case is the vpFuseCandidates vector from LocalMapping.cc, which comes
+// through the single-keyframe path with numKFs == 1.
+void FuseKernel::ensureCapacity(size_t numKFs, size_t numPoints) {
+    const size_t fisheyeFactor = CudaUtils::cameraIsFisheye ? 2 : 1;
+    const size_t pairsNeeded = numKFs * numPoints * fisheyeFactor;
+
+    // Starting sizes match what the fixed allocation used to reserve, so this is
+    // hardening with no change in steady-state memory.
+    const size_t initialKFs    = MAX_NEIGHBOR_KF_COUNT * fisheyeFactor;
+    const size_t initialPoints = MAX_NEIGHBOR_KF_COUNT * CudaUtils::nFeatures_with_th * fisheyeFactor;
+    const size_t initialPairs  = initialKFs * CudaUtils::nFeatures_with_th * fisheyeFactor;
+
+    if (numKFs > neighKFCapacity) {
+        const size_t n = std::max(numKFs, std::max(neighKFCapacity * 2, initialKFs));
+        if (neighKFCapacity != 0) {
+            std::cout << "[FuseKernel:] growing keyframe buffers: " << neighKFCapacity
+                      << " -> " << n << " (needed " << numKFs << ")" << std::endl;
+            checkCudaError(cudaFree(d_neighKFs),"Failed to free fuse kernel memory: d_neighKFs");
+            checkCudaError(cudaFree(d_Tcw),"Failed to free fuse kernel memory: d_Tcw");
+            checkCudaError(cudaFree(d_TcwRight),"Failed to free fuse kernel memory: d_TcwRight");
+            checkCudaError(cudaFree(d_Ow),"Failed to free fuse kernel memory: d_Ow");
+            checkCudaError(cudaFree(d_OwRight),"Failed to free fuse kernel memory: d_OwRight");
+        }
+        checkCudaError(cudaMalloc((void**)&d_neighKFs, n * sizeof(MAPPING_DATA_WRAPPER::CudaKeyFrame*)), "Failed to allocate memory for d_neighKFs");
+        checkCudaError(cudaMalloc((void**)&d_Tcw, n * sizeof(Sophus::SE3f)), "Failed to allocate memory for d_Tcw");
+        checkCudaError(cudaMalloc((void**)&d_TcwRight, n * sizeof(Sophus::SE3f)), "Failed to allocate memory for d_TcwRight");
+        checkCudaError(cudaMalloc((void**)&d_Ow, n * sizeof(Eigen::Vector3f)), "Failed to allocate memory for d_Ow");
+        checkCudaError(cudaMalloc((void**)&d_OwRight, n * sizeof(Eigen::Vector3f)), "Failed to allocate memory for d_OwRight");
+        neighKFCapacity = n;
+    }
+
+    if (numPoints > mapPointCapacity) {
+        const size_t n = std::max(numPoints, std::max(mapPointCapacity * 2, initialPoints));
+        if (mapPointCapacity != 0) {
+            std::cout << "[FuseKernel:] growing map-point buffer: " << mapPointCapacity
+                      << " -> " << n << " (needed " << numPoints << ")" << std::endl;
+            checkCudaError(cudaFree(d_currKFMapPoints),"Failed to free fuse kernel memory: d_currKFMapPoints");
+        }
+        checkCudaError(cudaMalloc((void**)&d_currKFMapPoints, n * sizeof(MAPPING_DATA_WRAPPER::CudaMapPoint)), "Failed to allocate memory for d_currKFMapPoints");
+        mapPointCapacity = n;
+    }
+
+    if (pairsNeeded > pairCapacity) {
+        const size_t n = std::max(pairsNeeded, std::max(pairCapacity * 2, initialPairs));
+        if (pairCapacity != 0) {
+            std::cout << "[FuseKernel:] growing pair buffers: " << pairCapacity
+                      << " -> " << n << " (needed " << pairsNeeded << ")" << std::endl;
+            checkCudaError(cudaFree(d_bestDists),"Failed to free fuse kernel memory: d_bestDists");
+            checkCudaError(cudaFree(d_bestIdxs),"Failed to free fuse kernel memory: d_bestIdxs");
+        }
+        checkCudaError(cudaMalloc((void**)&d_bestDists, n * sizeof(int)), "Failed to allocate memory for d_bestDists");
+        checkCudaError(cudaMalloc((void**)&d_bestIdxs, n * sizeof(int)), "Failed to allocate memory for d_bestIdxs");
+        pairCapacity = n;
+    }
+}
 
 void FuseKernel::initialize() {
     if (memory_is_initialized)
         return;
 
-    int maxFeatures = CudaUtils::nFeatures_with_th;
-    size_t mapPointVecSize, neighborCount;
-
-    if (CudaUtils::cameraIsFisheye) {
-        mapPointVecSize = maxFeatures*2;
-        neighborCount = MAX_NEIGHBOR_KF_COUNT*2;
-    }
-    else {
-        mapPointVecSize = maxFeatures;
-        neighborCount = MAX_NEIGHBOR_KF_COUNT;
-    }
-
-    checkCudaError(cudaMalloc((void**)&d_currKFMapPoints, MAX_NEIGHBOR_KF_COUNT * mapPointVecSize * sizeof(MAPPING_DATA_WRAPPER::CudaMapPoint)), "Failed to allocate memory for d_currKFMapPoints");
-    checkCudaError(cudaMalloc((void**)&d_neighKFs, neighborCount * sizeof(MAPPING_DATA_WRAPPER::CudaKeyFrame*)), "Failed to allocate memory for d_neighKFs");
-    checkCudaError(cudaMalloc((void**)&d_Tcw, neighborCount * sizeof(Sophus::SE3f)), "Failed to allocate memory for d_Tcw");
-    checkCudaError(cudaMalloc((void**)&d_TcwRight, neighborCount * sizeof(Sophus::SE3f)), "Failed to allocate memory for d_TcwRight");
-    checkCudaError(cudaMalloc((void**)&d_Ow, neighborCount * sizeof(Eigen::Vector3f)), "Failed to allocate memory for d_Ow");
-    checkCudaError(cudaMalloc((void**)&d_OwRight, neighborCount * sizeof(Eigen::Vector3f)), "Failed to allocate memory for d_OwRight");
-    checkCudaError(cudaMalloc((void**)&d_bestDists, neighborCount * mapPointVecSize * sizeof(int)), "Failed to allocate memory for d_bestDists");
-    checkCudaError(cudaMalloc((void**)&d_bestIdxs, neighborCount * mapPointVecSize * sizeof(int)), "Failed to allocate memory for d_bestIdxs");
-
+    ensureCapacity(MAX_NEIGHBOR_KF_COUNT, CudaUtils::nFeatures_with_th);
     memory_is_initialized = true;
 }
 
 void FuseKernel::shutdown() {
-    if (!memory_is_initialized) 
+    if (!memory_is_initialized)
         return;
 
-    checkCudaError(cudaFree(d_currKFMapPoints),"Failed to free fuse kernel memory: d_currKFMapPoints");
-    checkCudaError(cudaFree(d_neighKFs),"Failed to free fuse kernel memory: d_neighKFs");
-    checkCudaError(cudaFree(d_Tcw),"Failed to free fuse kernel memory: d_Tcw");
-    checkCudaError(cudaFree(d_TcwRight),"Failed to free fuse kernel memory: d_TcwRight");
-    checkCudaError(cudaFree(d_Ow),"Failed to free fuse kernel memory: d_Ow");
-    checkCudaError(cudaFree(d_OwRight),"Failed to free fuse kernel memory: d_OwRight");
-    checkCudaError(cudaFree(d_bestDists),"Failed to free fuse kernel memory: d_bestDists");
-    checkCudaError(cudaFree(d_bestIdxs),"Failed to free fuse kernel memory: d_bestIdxs");
+    freeBuffers();
+    memory_is_initialized = false;
 }
 
 __device__ int predictScale(float currentDist, float maxDistance, MAPPING_DATA_WRAPPER::CudaKeyFrame* pKF) {
@@ -240,10 +298,12 @@ void FuseKernel::launch(ORB_SLAM3::KeyFrame *neighKF, const vector<ORB_SLAM3::Ma
 
     MAPPING_DATA_WRAPPER::CudaKeyFrame* d_neighKF = neighKF->GetCudaKeyFrame();
     if (d_neighKF == nullptr) {
-        cerr << "[ERROR] FuseKernel::launch: ] no GPU mirror for keyframe: " << neighKF->mnId << "\n";
-        MappingKernelController::shutdownKernels(true, true);
-        exit(EXIT_FAILURE);
+        std::ostringstream out;
+        out << "FuseKernel::launch: no GPU mirror for keyframe " << neighKF->mnId;
+        fatalError(out.str().c_str());
     }
+
+    ensureCapacity(1, currKFMapPoints.size());
 
 #ifdef REGISTER_LOCAL_MAPPING_STATS
     std::chrono::steady_clock::time_point startCopyObjectCreation = std::chrono::steady_clock::now();
@@ -502,6 +562,8 @@ void FuseKernel::launchV2(std::vector<ORB_SLAM3::KeyFrame*> neighKFs, ORB_SLAM3:
     if (neighKFSize == 0 || currKFMapPoints.size() == 0)
         return;
 
+    ensureCapacity((size_t)neighKFSize, currKFMapPoints.size());
+
 #ifdef REGISTER_LOCAL_MAPPING_STATS
     std::chrono::steady_clock::time_point startCopyObjectCreation = std::chrono::steady_clock::now();
 #endif
@@ -511,9 +573,9 @@ void FuseKernel::launchV2(std::vector<ORB_SLAM3::KeyFrame*> neighKFs, ORB_SLAM3:
     for (int i = 0; i < neighKFSize; i++) {
         neighKFsGPUAddress[i] = neighKFs[i]->GetCudaKeyFrame();
         if (neighKFsGPUAddress[i] == nullptr) {
-            cerr << "[ERROR] FuseKernel::launch: ] no GPU mirror for keyframe: " << neighKFs[i]->mnId << "\n";
-            MappingKernelController::shutdownKernels(true, true);
-            exit(EXIT_FAILURE);
+            std::ostringstream out;
+            out << "FuseKernel::launchV2: no GPU mirror for keyframe " << neighKFs[i]->mnId;
+            fatalError(out.str().c_str());
         }
     }
 

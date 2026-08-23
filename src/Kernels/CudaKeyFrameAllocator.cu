@@ -4,6 +4,7 @@
 #include "Stats/LocalMappingStats.h"
 
 #include <atomic>
+#include <sstream>
 
 // #define DEBUG
 
@@ -26,10 +27,9 @@ namespace {
     inline void abortIfNotInitialized(ORB_SLAM3::KeyFrame* KF) {
         if (memory_is_initialized.load(std::memory_order_acquire))
             return;
-        cout << "[ERROR] CudaKeyFrameAllocator::create: memory not initialized (KF "
-             << KF->mnId << ")!\n";
-        MappingKernelController::shutdownKernels(true, true);
-        exit(EXIT_FAILURE);
+        std::ostringstream out;
+        out << "CudaKeyFrameAllocator::create: memory not initialized (KF " << KF->mnId << ")";
+        fatalError(out.str().c_str());
     }
 }
 

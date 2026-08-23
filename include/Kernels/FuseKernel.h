@@ -30,6 +30,16 @@ class FuseKernel: public KernelInterface {
         void saveStats(const string &file_path) override;
 
     private:
+        // Grow the device buffers to fit this call. They were fixed at
+        // MAX_NEIGHBOR_KF_COUNT while launchV2 copied neighKFs.size() entries with no
+        // check -- the same defect that fired in SearchAndFuseKernel.
+        void ensureCapacity(size_t numKFs, size_t numPoints);
+        void freeBuffers();
+
+        size_t neighKFCapacity = 0;   // d_neighKFs, d_Tcw, d_TcwRight, d_Ow, d_OwRight
+        size_t mapPointCapacity = 0;  // d_currKFMapPoints
+        size_t pairCapacity = 0;      // d_bestDists, d_bestIdxs
+
         bool memory_is_initialized;
         int *d_bestDists, *d_bestIdxs;
         MAPPING_DATA_WRAPPER::CudaKeyFrame **d_neighKFs;

@@ -40,6 +40,14 @@ public:
     int origDescriptorDistance(const cv::Mat &a, const cv::Mat &b);
 
 private:
+    // Grow the map-point buffers to fit this launch. They were fixed at 4100 while
+    // every launch path filled them with vpPoints.size() entries and only warned on
+    // overflow -- the same defect that fired in SearchAndFuseKernel.
+    void ensureMapPointCapacity(size_t numMapPoints);
+    void freeMapPointBuffers();
+
+    size_t mapPointCapacity = 0;
+
     bool memory_is_initialized;
     int *d_bestDists, *d_bestIdxs;
     int *bestDists, *bestIdxs;

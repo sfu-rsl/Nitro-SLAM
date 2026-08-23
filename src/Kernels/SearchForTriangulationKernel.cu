@@ -1,4 +1,5 @@
 #include <iostream>
+#include <sstream>
 #include <fstream>
 
 #include "Kernels/SearchForTriangulationKernel.h"
@@ -517,18 +518,19 @@ void SearchForTriangulationKernel::launch(ORB_SLAM3::KeyFrame* mpCurrentKeyFrame
 
     MAPPING_DATA_WRAPPER::CudaKeyFrame* currKeyframeOnGPU = mpCurrentKeyFrame->GetCudaKeyFrame();
     if (currKeyframeOnGPU == nullptr) {
-        cerr << "[ERROR] SearchForTriangulationKernel::launch: ] no GPU mirror for keyframe: " << mpCurrentKeyFrame->mnId << "\n";
-        MappingKernelController::shutdownKernels(true, true);
-        exit(EXIT_FAILURE);
+        std::ostringstream out;
+        out << "SearchForTriangulationKernel::launch: no GPU mirror for keyframe " << mpCurrentKeyFrame->mnId;
+        fatalError(out.str().c_str());
     }
 
     MAPPING_DATA_WRAPPER::CudaKeyFrame* neighKeyframesOnGPU[nn];
     for (size_t i = 0; i < nn; i++) {
         neighKeyframesOnGPU[i] = vpNeighKFs[vpNeighKFsIndexes[i]]->GetCudaKeyFrame();
         if (neighKeyframesOnGPU[i] == nullptr) {
-            cerr << "[ERROR] SearchForTriangulationKernel::launch: ] no GPU mirror for keyframe: " << vpNeighKFs[vpNeighKFsIndexes[i]]->mnId << "\n";
-            MappingKernelController::shutdownKernels(true, true);
-            exit(EXIT_FAILURE);
+            std::ostringstream out;
+            out << "SearchForTriangulationKernel::launch: no GPU mirror for neighbour keyframe "
+                << vpNeighKFs[vpNeighKFsIndexes[i]]->mnId;
+            fatalError(out.str().c_str());
         }
     }
         

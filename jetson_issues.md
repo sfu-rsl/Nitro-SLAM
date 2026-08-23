@@ -41,9 +41,13 @@ void checkCudaError(cudaError_t err, const char* msg) {
 }
 ```
 
-Whichever thread hits an error tears down kernel memory while the other two threads are
-still running and still using it. The teardown then segfaults, and the segfault is what
-you see in the terminal. Two consequences worth keeping in mind while debugging:
+Whichever thread hit an error tore down kernel memory while the other two threads were
+still running and still using it. The teardown then segfaulted, and the segfault was what
+appeared in the terminal.
+
+**This is now fixed** (see "Error handling" below), but it is why every symptom recorded
+here points somewhere other than its cause. Two consequences worth keeping in mind when
+reading old logs:
 
 - **The stderr line printed just before the crash is the real error.** `run_script.sh`
   redirects only stdout into `ostream.txt`, so that line lands in the *batch* log, not
@@ -51,7 +55,7 @@ you see in the terminal. Two consequences worth keeping in mind while debugging:
 - A `cudaGetLastError()` failure is reported against whatever kernel launched *next*,
   not the call that actually failed. That is the whole of defect 1.
 
-Worth fixing on its own merits — see "Still open" below.
+
 
 ---
 
@@ -220,9 +224,10 @@ build the `SO3` directly. Quaternion normalisation is cheaper than a 3×3 SVD if
 shows on a profile (it does not — LIBA is ~100 ms and this runs once per keyframe).
 Relaxing Sophus's epsilon is the wrong lever: it hides genuine divergence too.
 
-## 4. `SearchAndFuseKernel` fixed capacity vs runtime size
+## 4. Fixed-capacity buffers filled with runtime sizes
 
-This is item #7 in `issues.md`, now confirmed firing. Rate was about 1 in 55 full runs.
+This is item #7 in `issues.md`. It fired in `SearchAndFuseKernel` at about 1 run in 55;
+two sibling kernels had the identical pattern and were converted at the same time.
 
 **Symptom.** During a loop closure:
 
@@ -264,24 +269,112 @@ avoid the realloc entirely; growth was chosen because it needs no knowledge of t
 caller. If you prefer a hard cap, it must be enforced *before* the fill loops and fail
 loudly, not at the memcpy.
 
+### The same pattern in two more kernels
+
+Both converted to the same `ensureCapacity` shape.
+
+**`SearchByProjectionKernel` — confirmed firing, not latent.** Map-point buffers were
+fixed at 4100 while all four launch paths filled them with `vpPoints.size()`. It already
+had instrumentation that *warned* on overflow without preventing it, and the high-water
+recorded in `issues.md` was a comfortable 711/4100, which is why it was written off as
+latent.
+
+That measurement was from outdoors5. On the loop-heavy EuRoC V-sequences it **exceeds
+4100**: a validation run needed 4116. With the old warn-only code that call would have
+written past the pinned host buffer and asked cudaMemcpy to overrun the device
+allocation — the same `cudaErrorInvalidValue` failure as `SearchAndFuseKernel`, just on a
+different sequence mix. `ensureMapPointCapacity()` now grows instead.
+
+The lesson is about the measurement, not the code: a high-water mark is only evidence for
+the workload it was measured on. 711/4100 on one sequence said nothing about V102.
+
+Its keyframe-side buffers (`h_KeyFrames`, `h_Ow`, `h_Tcw`) stay fixed at 3 deliberately:
+the caller computes `covKFsSize = std::min<size_t>(3, vpCurrentCovKFs.size())`
+(`src/LoopClosing.cc:958`, `:1152`), so 3 is a guarantee, not an estimate. Do not "fix"
+those to grow — there is nothing to fix.
+
+**`FuseKernel`** — device buffers were fixed at `MAX_NEIGHBOR_KF_COUNT` (100, doubled for
+fisheye) while `launchV2` copied `neighKFs.size()` entries unchecked. ORB-SLAM3's
+`SearchInNeighbors` adds second-order covisibles, so exceeding 100 is reachable in a
+dense map. Also fixed: `shutdown()` never cleared `memory_is_initialized`, so a
+shutdown/re-init cycle would have double-freed.
+
+**Grow the dimensions independently.** This is the part worth getting right, and the
+first attempt got it wrong in a way that only the growth logging exposed.
+
+`d_currKFMapPoints` looks over-allocated at `MAX_NEIGHBOR_KF_COUNT * maxFeatures`, since
+the kernel only indexes `[0, numPoints)`. It is not. `numPoints` is not bounded by the
+feature count: `LocalMapping::SearchInNeighbors` also calls the single-keyframe path with
+`vpFuseCandidates`, reserved as `vpTargetKFs.size() * vpMapPointMatches.size()`
+(`src/LocalMapping.cc:1469`). Measured on EuRoC with 1200 features, that path asks for
+**up to ~5500 points with `numKFs == 1`**. Shrinking the buffer to `maxFeatures` makes it
+reallocate three times per sequence.
+
+Worse, sizing the pair buffers (`d_bestDists`, `d_bestIdxs`) as
+`kfCapacity * pointCapacity` multiplies two worst cases that never co-occur — the
+large-`numPoints` case always arrives with one keyframe. Combined with a growth rule that
+doubled *both* dimensions whenever *either* was exceeded, capacity ran
+100/1220 -> 800/9760 and the pair buffers reached ~7.8M ints (~31 MB each) against the
+original 122K (~0.5 MB): a ~64x memory regression on a board already peaking at 1.6 GB.
+
+So each kernel now tracks three capacities and grows them separately:
+
+| group | sized by |
+|---|---|
+| keyframe buffers | `numKFs` |
+| map-point buffers | `numPoints` |
+| pair buffers (`bestDists`/`bestIdxs`) | the call's actual `numPoints * numKFs` (x2 fisheye) |
+
+Starting sizes equal the original fixed allocations, so this is hardening with no
+steady-state memory change. The fisheye x2 stays explicit in the pair count, because the
+doubling is a property of the kernel's indexing (each keyframe is processed left and
+right), not of the neighbour list.
+
+Each of the three logs when it actually grows, per group. Keep something like it. Without
+it a clean test run cannot be distinguished from the case never occurring — and it is
+what caught the sizing regression above, which 9 otherwise-clean runs had happily hidden.
+
 ---
+
+## Error handling
+
+Not a Tegra defect, but the reason every defect above presented as something else.
+
+`checkCudaError` used to tear down all three kernel controllers and call `exit()`. The
+failing thread does not own those GPU buffers, so the other two threads carried on into
+freed memory; and `exit()` runs static destructors while they are still inside CUDA.
+Either way the process died somewhere unrelated to the actual error.
+
+Replaced with `fatalError()` (`src/Kernels/CudaUtils.cu`), which:
+
+- **does not tear anything down.** There is nothing to release on a fatal path — the
+  driver reclaims the context at process exit — and releasing it is precisely what
+  caused the secondary crashes.
+- **uses `std::_Exit`, not `exit`**, so no static destructors or atexit handlers run
+  while other threads are live in CUDA.
+- **holds a mutex through the exit**, so a second thread failing at the same moment
+  blocks rather than interleaving with or truncating the first message. That is not
+  hypothetical: the run that caught defect 4 had `SearchAndFuseKernel` failing on the
+  loop-closing thread and `SearchLocalPointsKernel` failing on the tracking thread
+  together.
+
+Applied at all seven sites that had the `shutdownKernels(...); exit(EXIT_FAILURE);`
+shape: `CudaUtils.cu` (checkCudaError), `CudaKeyFrameAllocator.cu`,
+`SearchForTriangulationKernel.cu` (x2), `FuseKernel.cu` (x2), `SearchLocalPointsKernel.cu`.
+
+Consequence for tooling: a fatal CUDA error now exits **rc=1 with a `[FATAL]` line**
+rather than segfaulting with rc=139. `run_timing_batch.sh` only tests `rc -ne 0`, so it
+is unaffected, but anything keying on 139 needs updating.
 
 ## Still open
 
-Not fixed, listed in the order I would take them.
-
-1. **Same unchecked-capacity pattern as defect 4**, in two more kernels.
-   `SearchByProjectionKernel` (capacity 4100) only *warns* via `checkMapPointCapacity`
-   and still overruns; measured high-water 711/4100, so latent. `FuseKernel`
-   (`MAX_NEIGHBOR_KF_COUNT` 100) is unmeasured and never fired in 110 runs, but
-   ORB-SLAM3's `SearchInNeighbors` adds second-order covisibles, so exceeding 100 is
-   possible in a dense map. The `ensureCapacity` pattern from defect 4 ports directly.
-2. **`checkCudaError` teardown** — see the note at the top. It turns every CUDA error
-   into a segfault in an unrelated thread and destroys the diagnosis. Reporting the
-   error and letting the process exit without cross-thread teardown would have saved
-   most of the debugging in this document.
-3. **The graphite change lives in a submodule** (`Thirdparty/graphite`,
+1. **The graphite change lives in a submodule** (`Thirdparty/graphite`,
    `sfu-rsl/graphite`). It needs committing and pushing there or it is lost on re-clone.
+2. **Thread-safety items 3-5 in `issues.md`** were not revisited. In particular #4, a
+   keyframe slot returned to the free list while a kernel may still be reading it, is
+   not addressed by locking and would present as a rare non-deterministic fault — the
+   same shape as defect 4, so do not assume the crash budget is now zero without
+   evidence.
 
 ## Verification as of writing
 
@@ -312,6 +405,35 @@ sweep on its own would not have distinguished a working fix from the case not re
 Connected-keyframe counts stayed at 15-19 against a capacity of 100, so the map-point
 buffer was the binding constraint, as diagnosed. The overflow rate is higher here (10%)
 than in the batch (~2%) because this rotation is deliberately loop-closure-heavy.
+
+### After the two sibling kernels and the error-handling change
+
+Same hunt, 40 native runs, V101/V102/V103/V203:
+
+| | result |
+|---|---|
+| runs completing a full trajectory | **40 / 40** |
+| crashes | 0 |
+| `[FATAL]` lines | 0 |
+| capacity growths | 4, all map-point-only |
+
+The four growths were `SearchAndFuse` 3000 -> 6000 (needed 3113, 3139, 3151) and
+`SearchByProjection` 4100 -> 8200 (needed 4116). Two things to read from that:
+
+- Only the map-point group ever grew; keyframe and pair capacities stayed at their
+  starting sizes. That is the independent-growth rule working. An earlier version that
+  doubled every dimension whenever one was exceeded would have quadrupled the pair
+  buffers on each of these.
+- The growth code is now exercised in two of the three kernels, so it is no longer
+  untested code on a rarely-taken path.
+
+**What 40 runs does not establish.** Against a fault at defect 4's rate (1 in 55), 40
+clean runs is only ~52% detection power; 60 gives 67%, 110 gives 87%. These changes are
+deterministic (buffer sizing and an error path), so their failure modes appear in the
+first run or two rather than rarely — which is what this run set is good for. It is not
+strong evidence about rare races. The full batch is the better regression test if that
+matters, and it also regenerates the timing and memory numbers against the final binary,
+which the ones above are not.
 
 ## Reproducing / debugging on this board
 
