@@ -18,12 +18,11 @@
 #define FRAME_GRID_ROWS 48
 #define FRAME_GRID_COLS 64
 #define KEYPOINTS_PER_CELL 20
-#define MAX_NUM_MAPPOINTS 25000
 
 class SearchLocalPointsKernel: public KernelInterface {
 
     public:
-        SearchLocalPointsKernel() { memory_is_initialized = false; };
+        SearchLocalPointsKernel() { memory_is_initialized = false; mapPointCapacity = 0; };
         void initialize() override;
         void shutdown() override;
         void saveStats(const string &file_path) override;
@@ -34,7 +33,14 @@ class SearchLocalPointsKernel: public KernelInterface {
         void setFrame(TRACKING_DATA_WRAPPER::CudaFrame* cudaFrame);
     
     private:
+        // The local map grows without bound as a sequence runs, and a loop closure can
+        // enlarge it sharply in a single frame, so the per-map-point buffers are grown on
+        // demand rather than fixed at a compile-time maximum.
+        void ensureCapacity(size_t numMapPoints);
+        void freeBuffers();
+
         bool memory_is_initialized;
+        size_t mapPointCapacity;
         TRACKING_DATA_WRAPPER::CudaFrame *d_frame, *h_frame;
         int *h_bestLevel, *h_bestLevel2, *h_bestDist, *h_bestDist2, *h_bestIdx;
         int *d_bestLevel, *d_bestLevel2, *d_bestDist, *d_bestDist2, *d_bestIdx;

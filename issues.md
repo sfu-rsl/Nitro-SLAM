@@ -1,7 +1,49 @@
 # GPU implementation — review notes
 
-Read-only review of the CUDA path. Nothing here has been changed. Ordered by how
-confident I am that it is a real defect, not by severity.
+Review of the CUDA path, ordered by how confident I am that each is a real defect,
+not by severity. Originally read-only; one entry (now **§A**) has since been confirmed
+against a live failure and fixed. Everything else remains unchanged.
+
+## Fixed
+
+### A. `SearchLocalPointsKernel` map-point cap — confirmed root cause of the magistrale1 crash — FIXED
+
+The fixed `MAX_NUM_MAPPOINTS` 25000 cap in `SearchLocalPointsKernel` is not latent: it is
+exceeded in practice, and it was the cause of the long-standing intermittent magistrale1
+abort. Captured directly:
+
+```
+[FATAL] SearchLocalPointsKernel::launch: 26196 map points exceeds MAX_NUM_MAPPOINTS 25000
+```
+
+The local map grows over a sequence and a loop closure enlarges it sharply in one frame.
+Whether the post-closure local map crosses 25000 decides the run, which is why the outcome
+was cleanly bimodal — the closure lands at the same point every time and the run either
+survives it or dies there:
+
+| outcome | durations (s) |
+|---|---|
+| crash | 747.9, 748.0, 748.4, 748.6, 748.8, 749.4 |
+| success | 876.3, 876.4, 876.5, 877.0 |
+
+Nitro-SLAM crashed 6 of 12 magistrale1 attempts; ORB-SLAM3 1 of 6 (the CPU path has no
+such cap, so the baseline dies from something else — see §14 and §3).
+
+**Before the guard existed, this was silent.** The `[FATAL]` check was added in `052f855`;
+prior to that the overrun simply wrote past the pinned host and device allocations, which
+is why every earlier crash died with no message at all. Every run in `Results-tumvi/` was
+produced by that binary. Survivors peaked at 23666 (corridor2) and 23344 (corridor1) — a
+6-7% margin — so magistrale1 need not be the only sequence at risk on a re-seeded batch.
+
+**Fix applied:** `ensureCapacity()` / `freeBuffers()` on the `SearchAndFuseKernel` model.
+Doubling growth from an initial 25000, so steady-state allocation is unchanged from the
+existing runs and only genuinely larger local maps reallocate. This also fixed a leak:
+the old `shutdown()` never freed the ten R-side `best*` buffers or `d_mDescriptor`.
+
+Two caveats worth keeping in view. Raising the cap does not make a >25000 local map *fast*
+— it removes the abort, not the cost. And CPU pose-graph optimisation (`kernel_status_FL`
+bit 5 clear) appeared to dodge the crash 3/3, but that is incidental: it perturbs the
+corrected map into a different size, it does not remove the cap.
 
 ## Confirmed defects
 
@@ -122,18 +164,24 @@ CPU descriptors are not bit-identical.
 
 ### 7. Unchecked buffer capacities at launch
 
-`SearchLocalPointsKernel.cu:359` is the good pattern — it compares `numPoints` against
-`MAX_NUM_MAPPOINTS` and reports. Nothing else does:
+Superseded in part: `SearchAndFuseKernel` and `FuseKernel` gained `ensureCapacity()` in
+`7479e85`/`052f855`, and `SearchLocalPointsKernel` now grows too (§A). Current state:
 
-| kernel | buffer capacity | launch-time size | checked |
+| kernel | buffer capacity | launch-time size | behaviour |
 |---|---|---|---|
-| `SearchByProjectionKernel` | 4100 map points | `vpPoints.size()` | no |
-| `SearchAndFuseKernel` | 100 connected KFs | `connectedKFs.size()` | no |
-| `FuseKernel` | `MAX_NEIGHBOR_KF_COUNT` = 100 | `neighKFs.size()` | no |
-| `SearchLocalPointsKernel` | `MAX_NUM_MAPPOINTS` = 25000 | `numPoints` | **yes** |
+| `SearchByProjectionKernel` | 4100 map points | `vpPoints.size()` | unchecked |
+| `CudaKeyFrame::addFeatureVector` | `MAX_FEAT_VEC_SIZE` = 100 ints | `mFeatCount` | unchecked — see §15 |
+| `SearchAndFuseKernel` | grows | `connectedKFs.size()` | `ensureCapacity()` |
+| `FuseKernel` | grows | `neighKFs.size()` | `ensureCapacity()` |
+| `SearchLocalPointsKernel` | grows from 25000 | `numPoints` | `ensureCapacity()` |
 
 Measured on outdoors5 (`1 1 1`): `SearchByProjection` high-water mark was **711 / 4100**,
-zero overflows — so that one is latent, not firing. The other two are unmeasured.
+zero overflows — so that one is latent, not firing.
+
+The original framing of this entry — that `SearchLocalPointsKernel`'s check was "the good
+pattern" — was wrong in an instructive way. Detecting the overflow is necessary but not
+sufficient: the check aborted the process, which is how a recoverable capacity problem
+became a 50% run-loss rate on magistrale1. Growing beats both overrunning and aborting.
 
 ### 8. Stack VLAs sized by runtime data
 
@@ -200,6 +248,49 @@ insert more before `Release()` lands. The **GBA path has no `EmptyQueue()` at al
 stops local mapping, walks the entire spanning tree, then calls `Release()`, deleting
 everything that accumulated during the walk. Loss is bounded by the queue cap of 3 today;
 it scales directly if that cap is raised.
+
+There is a second hazard here beyond the dropped keyframes: `Release()` mutates and frees
+from `mlNewKeyFrames` while holding `mMutexStop` and `mMutexFinish`, but **not**
+`mMutexNewKFs` — the mutex guarding that list at its other three access points
+(`LocalMapping.cc:434`, `:441`, `:448`). `InsertKeyFrame()` runs on the tracking thread, so
+the two can mutate the same `std::list` concurrently.
+
+Investigated as the prime suspect for the magistrale1 crash, since `Local Mapping RELEASE`
+was the last line before every death. **It was not the cause** — that turned out to be §A.
+Both were wrong guesses that fit the log tail; the crash was in tracking, downstream of the
+closure, not in the loop-closing handoff itself. The race is still real and still unfixed,
+it just is not what was killing those runs.
+
+### 15. `mFeatVecStartIndexes` device buffer is sized 100, copy is sized by BoW node count — `CudaKeyFrame.cu:155`
+
+```cpp
+mFeatCount = featVec.size();                       // distinct BoW nodes for this keyframe
+...
+cudaMemcpy(mFeatVecStartIndexes, tmp_mFeatVecStartIndexes, mFeatCount*sizeof(int), ...);
+```
+
+`mFeatVecStartIndexes` is allocated at `MAX_FEAT_VEC_SIZE` = **100** ints
+(`CudaKeyFrame.cu:45`), and `copyFeatVec()` applies no cap. `mFeatCount` is the number of
+distinct level-4 BoW nodes for the keyframe, which for the ~1000-1500 features these
+sequences produce routinely runs to several hundred. `cudaMemcpy` does not reliably fault
+on a modest overrun within the same allocation arena, so this can corrupt whatever device
+memory follows rather than failing loudly.
+
+Circumstantial support that the cap is genuinely exceeded: `SearchForTriangulationKernel`
+already carries truncation counters against this same constant — `g_sftTruncatedPairs`,
+`g_sftDroppedNodes`, printed at shutdown against `" / cap " << MAX_FEAT_VEC_SIZE`. Reading
+those off a real run is the cheapest way to confirm.
+
+The companion buffer `mFeatVec` (`MAX_FEAT_PER_WORD*MAX_FEAT_VEC_SIZE` = 10000 uints
+against a total-feature-count copy of ~1000-1500) has ample headroom and is not at risk.
+
+### 16. Grid stride: one runtime constant, one compile-time constant — `CudaKeyFrame.cu:126,136`
+
+`flatMGrid` is strided by the runtime `CudaUtils::keypointsPerCell`; `flatMGridRight` by the
+compile-time `KEYPOINTS_PER_CELL`. Both are 20 today so the two agree and nothing breaks —
+this is purely latent, and bites the moment `keypointsPerCell` is tuned. Neither loop caps
+`num_keypoints` per cell against the stride either, so a dense cell overruns into the next
+one (same shape as §2).
 
 ## Not defects (checked and clear)
 

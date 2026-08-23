@@ -3,7 +3,139 @@
 #include <memory.h>
 #include <csignal> 
 #include <sstream>
+#include <algorithm>
 
+namespace {
+// Starting capacity. The local map keeps growing as a sequence runs and a loop
+// closure can enlarge it sharply in one frame, so ensureCapacity() grows the
+// buffers rather than overrunning them.
+constexpr size_t kInitialMapPoints = 25000;
+}
+
+
+void SearchLocalPointsKernel::freeBuffers() {
+    if (mapPointCapacity == 0)
+        return;
+
+    cudaFreeHost(h_isEmpty);
+    cudaFreeHost(h_mbTrackInView);
+    cudaFreeHost(h_mbTrackInViewR);
+    cudaFreeHost(h_mTrackDepth);
+    cudaFreeHost(h_mnTrackScaleLevel);
+    cudaFreeHost(h_mTrackViewCos);
+    cudaFreeHost(h_mTrackProjX);
+    cudaFreeHost(h_mTrackProjY);
+    cudaFreeHost(h_mnTrackScaleLevelR);
+    cudaFreeHost(h_mTrackViewCosR);
+    cudaFreeHost(h_mTrackProjXR);
+    cudaFreeHost(h_mTrackProjYR);
+    cudaFreeHost(h_mDescriptor);
+    cudaFreeHost(h_bestLevel);
+    cudaFreeHost(h_bestLevel2);
+    cudaFreeHost(h_bestDist);
+    cudaFreeHost(h_bestDist2);
+    cudaFreeHost(h_bestIdx);
+    cudaFreeHost(h_bestLevelR);
+    cudaFreeHost(h_bestLevelR2);
+    cudaFreeHost(h_bestDistR);
+    cudaFreeHost(h_bestDistR2);
+    cudaFreeHost(h_bestIdxR);
+
+    cudaFree(d_isEmpty);
+    cudaFree(d_mbTrackInView);
+    cudaFree(d_mbTrackInViewR);
+    cudaFree(d_mTrackDepth);
+    cudaFree(d_mnTrackScaleLevel);
+    cudaFree(d_mTrackViewCos);
+    cudaFree(d_mTrackProjX);
+    cudaFree(d_mTrackProjY);
+    cudaFree(d_mnTrackScaleLevelR);
+    cudaFree(d_mTrackViewCosR);
+    cudaFree(d_mTrackProjXR);
+    cudaFree(d_mTrackProjYR);
+    cudaFree(d_mDescriptor);
+    cudaFree(d_bestLevel);
+    cudaFree(d_bestLevel2);
+    cudaFree(d_bestDist);
+    cudaFree(d_bestDist2);
+    cudaFree(d_bestIdx);
+    cudaFree(d_bestLevelR);
+    cudaFree(d_bestLevelR2);
+    cudaFree(d_bestDistR);
+    cudaFree(d_bestDistR2);
+    cudaFree(d_bestIdxR);
+
+    mapPointCapacity = 0;
+}
+
+// Every buffer here is indexed by map-point position, and launch() fills and copies
+// using the *runtime* count. Previously they were fixed at 25000 entries, so a local
+// map larger than that overran the pinned host arrays and asked cudaMemcpy to write
+// past the device allocations. Grow instead of clamping: dropping map points would
+// silently degrade tracking rather than fail loudly.
+void SearchLocalPointsKernel::ensureCapacity(size_t numMapPoints) {
+    if (numMapPoints <= mapPointCapacity)
+        return;
+
+    const size_t n = std::max(numMapPoints, std::max(mapPointCapacity * 2, kInitialMapPoints));
+    if (mapPointCapacity != 0) {
+        std::cout << "[SearchLocalPointsKernel:] growing map-point buffers: " << mapPointCapacity
+                  << " -> " << n << " (needed " << numMapPoints << ")" << std::endl;
+        freeBuffers();
+    }
+
+    checkCudaError(cudaMallocHost(&h_isEmpty, n * sizeof(bool)), "Failed to allocate memory for h_isEmpty");
+    checkCudaError(cudaMallocHost(&h_mbTrackInView, n * sizeof(bool)), "Failed to allocate memory for h_mbTrackInView");
+    checkCudaError(cudaMallocHost(&h_mbTrackInViewR, n * sizeof(bool)), "Failed to allocate memory for h_mbTrackInViewR");
+    checkCudaError(cudaMallocHost(&h_mTrackDepth, n * sizeof(float)), "Failed to allocate memory for h_mTrackDepth");
+    checkCudaError(cudaMallocHost(&h_mnTrackScaleLevel, n * sizeof(int)), "Failed to allocate memory for h_mnTrackScaleLevel");
+    checkCudaError(cudaMallocHost(&h_mTrackViewCos, n * sizeof(float)), "Failed to allocate memory for h_mTrackViewCos");
+    checkCudaError(cudaMallocHost(&h_mTrackProjX, n * sizeof(float)), "Failed to allocate memory for h_mTrackProjX");
+    checkCudaError(cudaMallocHost(&h_mTrackProjY, n * sizeof(float)), "Failed to allocate memory for h_mTrackProjY");
+    checkCudaError(cudaMallocHost(&h_mnTrackScaleLevelR, n * sizeof(int)), "Failed to allocate memory for h_mnTrackScaleLevelR");
+    checkCudaError(cudaMallocHost(&h_mTrackViewCosR, n * sizeof(float)), "Failed to allocate memory for h_mTrackViewCosR");
+    checkCudaError(cudaMallocHost(&h_mTrackProjXR, n * sizeof(float)), "Failed to allocate memory for h_mTrackProjXR");
+    checkCudaError(cudaMallocHost(&h_mTrackProjYR, n * sizeof(float)), "Failed to allocate memory for h_mTrackProjYR");
+    checkCudaError(cudaMallocHost(&h_mDescriptor, n * DESCRIPTOR_SIZE * sizeof(uint8_t)), "Failed to allocate memory for h_mDescriptor");
+
+    checkCudaError(cudaMalloc((void**)&d_isEmpty, n * sizeof(bool)), "Failed to allocate memory for d_isEmpty");
+    checkCudaError(cudaMalloc((void**)&d_mbTrackInView, n * sizeof(bool)), "Failed to allocate memory for d_mbTrackInView");
+    checkCudaError(cudaMalloc((void**)&d_mbTrackInViewR, n * sizeof(bool)), "Failed to allocate memory for d_mbTrackInViewR");
+    checkCudaError(cudaMalloc((void**)&d_mTrackDepth, n * sizeof(float)), "Failed to allocate memory for d_mTrackDepth");
+    checkCudaError(cudaMalloc((void**)&d_mnTrackScaleLevel, n * sizeof(int)), "Failed to allocate memory for d_mnTrackScaleLevel");
+    checkCudaError(cudaMalloc((void**)&d_mTrackViewCos, n * sizeof(float)), "Failed to allocate memory for d_mTrackViewCos");
+    checkCudaError(cudaMalloc((void**)&d_mTrackProjX, n * sizeof(float)), "Failed to allocate memory for d_mTrackProjX");
+    checkCudaError(cudaMalloc((void**)&d_mTrackProjY, n * sizeof(float)), "Failed to allocate memory for d_mTrackProjY");
+    checkCudaError(cudaMalloc((void**)&d_mnTrackScaleLevelR, n * sizeof(int)), "Failed to allocate memory for d_mnTrackScaleLevelR");
+    checkCudaError(cudaMalloc((void**)&d_mTrackViewCosR, n * sizeof(float)), "Failed to allocate memory for d_mTrackViewCosR");
+    checkCudaError(cudaMalloc((void**)&d_mTrackProjXR, n * sizeof(float)), "Failed to allocate memory for d_mTrackProjXR");
+    checkCudaError(cudaMalloc((void**)&d_mTrackProjYR, n * sizeof(float)), "Failed to allocate memory for d_mTrackProjYR");
+    checkCudaError(cudaMalloc((void**)&d_mDescriptor, n * DESCRIPTOR_SIZE * sizeof(uint8_t)), "Failed to allocate memory for d_mDescriptor");
+
+    checkCudaError(cudaMallocHost(&h_bestLevel, n * sizeof(int)), "Failed to allocate memory for h_bestLevel");
+    checkCudaError(cudaMallocHost(&h_bestLevel2, n * sizeof(int)), "Failed to allocate memory for h_bestLevel2");
+    checkCudaError(cudaMallocHost(&h_bestDist, n * sizeof(int)), "Failed to allocate memory for h_bestDist");
+    checkCudaError(cudaMallocHost(&h_bestDist2, n * sizeof(int)), "Failed to allocate memory for h_bestDist2");
+    checkCudaError(cudaMallocHost(&h_bestIdx, n * sizeof(int)), "Failed to allocate memory for h_bestIdx");
+    checkCudaError(cudaMalloc((void**)&d_bestLevel, n * sizeof(int)), "Failed to allocate memory for d_bestLevel");
+    checkCudaError(cudaMalloc((void**)&d_bestLevel2, n * sizeof(int)), "Failed to allocate memory for d_bestLevel2");
+    checkCudaError(cudaMalloc((void**)&d_bestDist, n * sizeof(int)), "Failed to allocate memory for d_bestDist");
+    checkCudaError(cudaMalloc((void**)&d_bestDist2, n * sizeof(int)), "Failed to allocate memory for d_bestDist2");
+    checkCudaError(cudaMalloc((void**)&d_bestIdx, n * sizeof(int)), "Failed to allocate memory for d_bestIdx");
+
+    checkCudaError(cudaMallocHost(&h_bestLevelR, n * sizeof(int)), "Failed to allocate memory for h_bestLevelR");
+    checkCudaError(cudaMallocHost(&h_bestLevelR2, n * sizeof(int)), "Failed to allocate memory for h_bestLevelR2");
+    checkCudaError(cudaMallocHost(&h_bestDistR, n * sizeof(int)), "Failed to allocate memory for h_bestDistR");
+    checkCudaError(cudaMallocHost(&h_bestDistR2, n * sizeof(int)), "Failed to allocate memory for h_bestDistR2");
+    checkCudaError(cudaMallocHost(&h_bestIdxR, n * sizeof(int)), "Failed to allocate memory for h_bestIdxR");
+    checkCudaError(cudaMalloc((void**)&d_bestLevelR, n * sizeof(int)), "Failed to allocate memory for d_bestLevelR");
+    checkCudaError(cudaMalloc((void**)&d_bestLevelR2, n * sizeof(int)), "Failed to allocate memory for d_bestLevelR2");
+    checkCudaError(cudaMalloc((void**)&d_bestDistR, n * sizeof(int)), "Failed to allocate memory for d_bestDistR");
+    checkCudaError(cudaMalloc((void**)&d_bestDistR2, n * sizeof(int)), "Failed to allocate memory for d_bestDistR2");
+    checkCudaError(cudaMalloc((void**)&d_bestIdxR, n * sizeof(int)), "Failed to allocate memory for d_bestIdxR");
+
+    mapPointCapacity = n;
+}
 
 void SearchLocalPointsKernel::initialize() {
     if (memory_is_initialized) {
@@ -11,56 +143,8 @@ void SearchLocalPointsKernel::initialize() {
     }
 
     checkCudaError(cudaMalloc(&d_frame, sizeof(TRACKING_DATA_WRAPPER::CudaFrame)), "Failed to allocate memory for d_frame");
-    
-    checkCudaError(cudaMallocHost(&h_isEmpty, MAX_NUM_MAPPOINTS * sizeof(bool)), "Failed to allocate memory for h_isEmpty");
-    checkCudaError(cudaMallocHost(&h_mbTrackInView, MAX_NUM_MAPPOINTS * sizeof(bool)), "Failed to allocate memory for h_mbTrackInView");
-    checkCudaError(cudaMallocHost(&h_mbTrackInViewR, MAX_NUM_MAPPOINTS * sizeof(bool)), "Failed to allocate memory for h_mbTrackInViewR");
-    checkCudaError(cudaMallocHost(&h_mTrackDepth, MAX_NUM_MAPPOINTS * sizeof(float)), "Failed to allocate memory for h_mTrackDepth");
-    checkCudaError(cudaMallocHost(&h_mnTrackScaleLevel, MAX_NUM_MAPPOINTS * sizeof(int)), "Failed to allocate memory for h_mnTrackScaleLevel");
-    checkCudaError(cudaMallocHost(&h_mTrackViewCos, MAX_NUM_MAPPOINTS * sizeof(float)), "Failed to allocate memory for h_mTrackViewCos");
-    checkCudaError(cudaMallocHost(&h_mTrackProjX, MAX_NUM_MAPPOINTS * sizeof(float)), "Failed to allocate memory for h_mTrackProjX");
-    checkCudaError(cudaMallocHost(&h_mTrackProjY, MAX_NUM_MAPPOINTS * sizeof(float)), "Failed to allocate memory for h_mTrackProjY");
-    checkCudaError(cudaMallocHost(&h_mnTrackScaleLevelR, MAX_NUM_MAPPOINTS * sizeof(int)), "Failed to allocate memory for h_mnTrackScaleLevelR");
-    checkCudaError(cudaMallocHost(&h_mTrackViewCosR, MAX_NUM_MAPPOINTS * sizeof(float)), "Failed to allocate memory for h_mTrackViewCosR");
-    checkCudaError(cudaMallocHost(&h_mTrackProjXR, MAX_NUM_MAPPOINTS * sizeof(float)), "Failed to allocate memory for h_mTrackProjXR");
-    checkCudaError(cudaMallocHost(&h_mTrackProjYR, MAX_NUM_MAPPOINTS * sizeof(float)), "Failed to allocate memory for h_mTrackProjYR");
-    checkCudaError(cudaMallocHost(&h_mDescriptor, MAX_NUM_MAPPOINTS * DESCRIPTOR_SIZE * sizeof(uint8_t)), "Failed to allocate memory for h_mDescriptor");
 
-    checkCudaError(cudaMalloc((void**)&d_isEmpty, MAX_NUM_MAPPOINTS * sizeof(bool)), "Failed to allocate memory for d_isEmpty");   
-    checkCudaError(cudaMalloc((void**)&d_mbTrackInView, MAX_NUM_MAPPOINTS * sizeof(bool)), "Failed to allocate memory for d_mbTrackInView");
-    checkCudaError(cudaMalloc((void**)&d_mbTrackInViewR, MAX_NUM_MAPPOINTS * sizeof(bool)), "Failed to allocate memory for d_mbTrackInViewR");
-    checkCudaError(cudaMalloc((void**)&d_mTrackDepth, MAX_NUM_MAPPOINTS * sizeof(float)), "Failed to allocate memory for d_mTrackDepth");
-    checkCudaError(cudaMalloc((void**)&d_mnTrackScaleLevel, MAX_NUM_MAPPOINTS * sizeof(int)), "Failed to allocate memory for d_mnTrackScaleLevel");
-    checkCudaError(cudaMalloc((void**)&d_mTrackViewCos, MAX_NUM_MAPPOINTS * sizeof(float)), "Failed to allocate memory for d_mTrackViewCos");
-    checkCudaError(cudaMalloc((void**)&d_mTrackProjX, MAX_NUM_MAPPOINTS * sizeof(float)), "Failed to allocate memory for d_mTrackProjX");
-    checkCudaError(cudaMalloc((void**)&d_mTrackProjY, MAX_NUM_MAPPOINTS * sizeof(float)), "Failed to allocate memory for d_mTrackProjY");
-    checkCudaError(cudaMalloc((void**)&d_mnTrackScaleLevelR, MAX_NUM_MAPPOINTS * sizeof(int)), "Failed to allocate memory for d_mnTrackScaleLevelR");
-    checkCudaError(cudaMalloc((void**)&d_mTrackViewCosR, MAX_NUM_MAPPOINTS * sizeof(float)), "Failed to allocate memory for d_mTrackViewCosR");
-    checkCudaError(cudaMalloc((void**)&d_mTrackProjXR, MAX_NUM_MAPPOINTS * sizeof(float)), "Failed to allocate memory for d_mTrackProjXR");
-    checkCudaError(cudaMalloc((void**)&d_mTrackProjYR, MAX_NUM_MAPPOINTS * sizeof(float)), "Failed to allocate memory for d_mTrackProjYR");
-    checkCudaError(cudaMalloc((void**)&d_mDescriptor, MAX_NUM_MAPPOINTS * DESCRIPTOR_SIZE * sizeof(uint8_t)), "Failed to allocate memory for d_mDescriptor");   
-
-    checkCudaError(cudaMallocHost(&h_bestLevel, MAX_NUM_MAPPOINTS * sizeof(int)), "Failed to allocate memory for h_bestLevel");
-    checkCudaError(cudaMallocHost(&h_bestLevel2, MAX_NUM_MAPPOINTS * sizeof(int)), "Failed to allocate memory for h_bestLevel2");   
-    checkCudaError(cudaMallocHost(&h_bestDist, MAX_NUM_MAPPOINTS * sizeof(int)), "Failed to allocate memory for h_bestDist");
-    checkCudaError(cudaMallocHost(&h_bestDist2, MAX_NUM_MAPPOINTS * sizeof(int)), "Failed to allocate memory for h_bestDist2");
-    checkCudaError(cudaMallocHost(&h_bestIdx, MAX_NUM_MAPPOINTS * sizeof(int)), "Failed to allocate memory for h_bestIdx");      
-    checkCudaError(cudaMalloc((void**)&d_bestLevel, MAX_NUM_MAPPOINTS * sizeof(int)), "Failed to allocate memory for d_bestLevel");
-    checkCudaError(cudaMalloc((void**)&d_bestLevel2, MAX_NUM_MAPPOINTS * sizeof(int)), "Failed to allocate memory for d_bestLevel2");   
-    checkCudaError(cudaMalloc((void**)&d_bestDist, MAX_NUM_MAPPOINTS * sizeof(int)), "Failed to allocate memory for d_bestDist");
-    checkCudaError(cudaMalloc((void**)&d_bestDist2, MAX_NUM_MAPPOINTS * sizeof(int)), "Failed to allocate memory for d_bestDist2");
-    checkCudaError(cudaMalloc((void**)&d_bestIdx, MAX_NUM_MAPPOINTS * sizeof(int)), "Failed to allocate memory for d_bestIdx");  
-
-    checkCudaError(cudaMallocHost(&h_bestLevelR, MAX_NUM_MAPPOINTS * sizeof(int)), "Failed to allocate memory for h_bestLevelR");
-    checkCudaError(cudaMallocHost(&h_bestLevelR2, MAX_NUM_MAPPOINTS * sizeof(int)), "Failed to allocate memory for h_bestLevelR2");   
-    checkCudaError(cudaMallocHost(&h_bestDistR, MAX_NUM_MAPPOINTS * sizeof(int)), "Failed to allocate memory for h_bestDistR");
-    checkCudaError(cudaMallocHost(&h_bestDistR2, MAX_NUM_MAPPOINTS * sizeof(int)), "Failed to allocate memory for h_bestDistR2");
-    checkCudaError(cudaMallocHost(&h_bestIdxR, MAX_NUM_MAPPOINTS * sizeof(int)), "Failed to allocate memory for h_bestIdxR");      
-    checkCudaError(cudaMalloc((void**)&d_bestLevelR, MAX_NUM_MAPPOINTS * sizeof(int)), "Failed to allocate memory for d_bestLevelR");
-    checkCudaError(cudaMalloc((void**)&d_bestLevelR2, MAX_NUM_MAPPOINTS * sizeof(int)), "Failed to allocate memory for d_bestLevelR2");   
-    checkCudaError(cudaMalloc((void**)&d_bestDistR, MAX_NUM_MAPPOINTS * sizeof(int)), "Failed to allocate memory for d_bestDistR");
-    checkCudaError(cudaMalloc((void**)&d_bestDistR2, MAX_NUM_MAPPOINTS * sizeof(int)), "Failed to allocate memory for d_bestDistR2");
-    checkCudaError(cudaMalloc((void**)&d_bestIdxR, MAX_NUM_MAPPOINTS * sizeof(int)), "Failed to allocate memory for d_bestIdxR");  
+    ensureCapacity(kInitialMapPoints);
 
     memory_is_initialized = true;
 }
@@ -357,12 +441,7 @@ void SearchLocalPointsKernel::launch(ORB_SLAM3::Frame &F, const vector<ORB_SLAM3
     }
 
     int numPoints = vmp.size();
-    if(numPoints > MAX_NUM_MAPPOINTS) {
-        std::ostringstream out;
-        out << "SearchLocalPointsKernel::launch: " << numPoints
-            << " map points exceeds MAX_NUM_MAPPOINTS " << MAX_NUM_MAPPOINTS;
-        fatalError(out.str().c_str());
-    }
+    ensureCapacity(numPoints);
 
 #ifdef REGISTER_TRACKING_STATS
     std::chrono::steady_clock::time_point startMapPointsWrap = std::chrono::steady_clock::now();
@@ -487,42 +566,10 @@ void SearchLocalPointsKernel::shutdown(){
     if (!memory_is_initialized) 
         return;
     cudaFree(d_frame);
-    cudaFreeHost(h_isEmpty);
-    cudaFreeHost(h_mbTrackInView);
-    cudaFreeHost(h_mbTrackInViewR);
-    cudaFreeHost(h_mTrackDepth);
-    cudaFreeHost(h_mnTrackScaleLevel);
-    cudaFreeHost(h_mTrackViewCos);
-    cudaFreeHost(h_mTrackProjX);
-    cudaFreeHost(h_mTrackProjY);
-    cudaFreeHost(h_mnTrackScaleLevelR);
-    cudaFreeHost(h_mTrackViewCosR);
-    cudaFreeHost(h_mTrackProjXR);
-    cudaFreeHost(h_mTrackProjYR);
-    cudaFreeHost(h_mDescriptor);
-    cudaFreeHost(h_bestLevel);
-    cudaFreeHost(h_bestLevel2);
-    cudaFreeHost(h_bestDist);
-    cudaFreeHost(h_bestDist2);
-    cudaFreeHost(h_bestIdx);
-    cudaFree(d_isEmpty);
-    cudaFree(d_mbTrackInView);
-    cudaFree(d_mbTrackInViewR);
-    cudaFree(d_mTrackDepth);
-    cudaFree(d_mnTrackScaleLevel);
-    cudaFree(d_mTrackViewCos);
-    cudaFree(d_mTrackProjX);
-    cudaFree(d_mTrackProjY);
-    cudaFree(d_mnTrackScaleLevelR);
-    cudaFree(d_mTrackViewCosR);
-    cudaFree(d_mTrackProjXR);
-    cudaFree(d_mTrackProjYR);
-    cudaFree(d_bestLevel);
-    cudaFree(d_bestLevel2);
-    cudaFree(d_bestDist);
-    cudaFree(d_bestDist2);
-    cudaFree(d_bestIdx);
+    freeBuffers();
+    memory_is_initialized = false;
 }
+
 
 void SearchLocalPointsKernel::saveStats(const string &file_path){
 
