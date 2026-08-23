@@ -39,7 +39,7 @@ public:
 
 private:
     std::vector<std::pair<int, int>> convertToVectorOfPairs(int* X, int N);
-    void flattenVRowIndices(const std::vector<std::vector<int>>& input, int* flat);
+    void flattenVRowIndices(const std::vector<std::vector<int>>& input, int* flat, int rows);
     void flattenPyramid(std::vector<cv::Mat>& mvImagePyramid, int origImageSize, uchar* flat);
     void copyGPUKeypoints(const std::vector<cv::KeyPoint> keypoints, TRACKING_DATA_WRAPPER::CudaKeyPoint* out);
 

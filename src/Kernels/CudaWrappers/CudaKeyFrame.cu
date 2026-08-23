@@ -8,6 +8,10 @@
 #define DEBUG_PRINT(msg) do {} while (0)
 #endif
 
+#include <algorithm>
+
+#include <vector>
+
 namespace MAPPING_DATA_WRAPPER
 {
     void CudaKeyFrame::initializeMemory(){
@@ -41,8 +45,10 @@ namespace MAPPING_DATA_WRAPPER
             checkCudaError(cudaMalloc((void**)&mDescriptors, nFeatures * DESCRIPTOR_SIZE * sizeof(uint8_t)), "Frame::failed to allocate memory for mDescriptors");
         }
 
-        checkCudaError(cudaMalloc((void**)&mFeatVec, MAX_FEAT_PER_WORD*MAX_FEAT_VEC_SIZE*sizeof(unsigned int)), "KeyFrame::failed to allocate memory for mFeatVec");
-        checkCudaError(cudaMalloc((void**)&mFeatVecStartIndexes, MAX_FEAT_VEC_SIZE*sizeof(int)), "KeyFrame::failed to allocate memory for mFeatVecStartIndexes");
+        featVecCapacity = MAX_FEAT_PER_WORD*MAX_FEAT_VEC_SIZE;
+        featStartIdxCapacity = MAX_FEAT_VEC_SIZE;
+        checkCudaError(cudaMalloc((void**)&mFeatVec, featVecCapacity*sizeof(unsigned int)), "KeyFrame::failed to allocate memory for mFeatVec");
+        checkCudaError(cudaMalloc((void**)&mFeatVecStartIndexes, featStartIdxCapacity*sizeof(int)), "KeyFrame::failed to allocate memory for mFeatVecStartIndexes");
     }
 
     CudaKeyFrame::CudaKeyFrame() {
@@ -144,15 +150,43 @@ namespace MAPPING_DATA_WRAPPER
         copyGPUCamera(&camera2, KF->mpCamera2);
     }
 
+    // mFeatVecStartIndexes held MAX_FEAT_VEC_SIZE (100) ints while this copied mFeatCount
+    // of them, and mFeatCount is the number of distinct BoW nodes for the keyframe, which
+    // for the feature counts these sequences produce runs well past 100. cudaMemcpy does
+    // not reliably fault on a modest overrun inside the same arena, so the excess quietly
+    // landed on whatever device allocation followed. Both buffers now grow to fit.
+    //
+    // The enclosing CudaKeyFrame lives in managed memory and the GPU dereferences these
+    // pointers straight out of the struct, so replacing them is visible device-side with
+    // no re-upload. Slots are recycled without re-running the constructor, so the
+    // capacities persist and a grown keyframe stays grown.
     void CudaKeyFrame::addFeatureVector(const DBoW2::FeatureVector &featVec) {
         mFeatCount = featVec.size();
-        unsigned int tmp_mFeatVec[mFeatCount * MAX_FEAT_PER_WORD];
-        int tmp_mFeatVecStartIndexes[mFeatCount];
-        copyFeatVec(tmp_mFeatVec, tmp_mFeatVecStartIndexes, featVec);
+        if (mFeatCount <= 0)
+            return;
+
+        size_t totalFeatures = 0;
+        for (const auto &node : featVec)
+            totalFeatures += node.second.size();
+
+        std::vector<unsigned int> tmp_mFeatVec(totalFeatures);
+        std::vector<int> tmp_mFeatVecStartIndexes(mFeatCount);
+        copyFeatVec(tmp_mFeatVec.data(), tmp_mFeatVecStartIndexes.data(), featVec);
         int mFeatVecSize = tmp_mFeatVecStartIndexes[mFeatCount-1];
 
-        checkCudaError(cudaMemcpy(mFeatVec, tmp_mFeatVec, mFeatVecSize*sizeof(unsigned int), cudaMemcpyHostToDevice), "CudaKeyFrame:: Failed to copy mFeatVec to gpu");
-        checkCudaError(cudaMemcpy(mFeatVecStartIndexes, tmp_mFeatVecStartIndexes, mFeatCount*sizeof(int), cudaMemcpyHostToDevice), "CudaKeyFrame:: Failed to copy mFeatVecStartIndexes to gpu");
+        if ((size_t)mFeatVecSize > featVecCapacity) {
+            cudaFree(mFeatVec);
+            featVecCapacity = std::max((size_t)mFeatVecSize, featVecCapacity * 2);
+            checkCudaError(cudaMalloc((void**)&mFeatVec, featVecCapacity*sizeof(unsigned int)), "CudaKeyFrame:: failed to grow mFeatVec");
+        }
+        if ((size_t)mFeatCount > featStartIdxCapacity) {
+            cudaFree(mFeatVecStartIndexes);
+            featStartIdxCapacity = std::max((size_t)mFeatCount, featStartIdxCapacity * 2);
+            checkCudaError(cudaMalloc((void**)&mFeatVecStartIndexes, featStartIdxCapacity*sizeof(int)), "CudaKeyFrame:: failed to grow mFeatVecStartIndexes");
+        }
+
+        checkCudaError(cudaMemcpy(mFeatVec, tmp_mFeatVec.data(), mFeatVecSize*sizeof(unsigned int), cudaMemcpyHostToDevice), "CudaKeyFrame:: Failed to copy mFeatVec to gpu");
+        checkCudaError(cudaMemcpy(mFeatVecStartIndexes, tmp_mFeatVecStartIndexes.data(), mFeatCount*sizeof(int), cudaMemcpyHostToDevice), "CudaKeyFrame:: Failed to copy mFeatVecStartIndexes to gpu");
     }
 
     void CudaKeyFrame::copyGPUCamera(CudaCamera *out, ORB_SLAM3::GeometricCamera *camera) {
@@ -189,5 +223,9 @@ namespace MAPPING_DATA_WRAPPER
         checkCudaError(cudaFree((void*)mvKeysUn),"Failed to free keyframe memory: mvKeysUn");
         checkCudaError(cudaFree((void*)mFeatVec),"Failed to free keyframe memory: mFeatVec");
         checkCudaError(cudaFree((void*)mFeatVecStartIndexes),"Failed to free keyframe memory: mFeatVecStartIndexes");
+        // Both pointers dangle now; clear the capacities so a reused slot cannot mistake
+        // them for live buffers.
+        featVecCapacity = 0;
+        featStartIdxCapacity = 0;
     }
 }

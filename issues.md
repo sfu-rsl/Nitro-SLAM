@@ -97,6 +97,17 @@ candidate count is below 200, i.e. effectively all of them.
 This is on FastTrack's stereo-match kernel (bit 1 of `kernel_status_FT`), active in
 every `11111` run.
 
+**FIXED**, together with §2, in `flattenVRowIndices()`: it now fills the whole buffer with
+-1 before copying, so padding terminates the loop, and the caller's broken `= {-1}`
+initialiser is gone.
+
+Measured effect on the kernel: **none**. `kernel_exec_time` on room3 was 0.3435 ms before
+and 0.3415 ms after. The wasted iterations were nearly free — every padding slot read the
+same `keypointsR[0]`, so the loads were broadcast cache hits, the octave check rejected
+them before any descriptor comparison, and all threads branched identically so there was
+no divergence. This is a correctness fix only; an earlier guess that it was inflating the
+reported stereo-match timings was wrong.
+
 ### 2. Stereo match: unchecked row overflow — `StereoMatchKernel.cu:623`
 
 ```cpp
@@ -106,6 +117,12 @@ memcpy(flat + i*MAX_FEATURES_IN_ROW_SLIDING_WINDOW, input[i].data(), sizeof(int)
 `input[i].size()` is never compared against `MAX_FEATURES_IN_ROW_SLIDING_WINDOW` (200).
 A row with more than 200 candidates writes into the next row's slot, and the last row
 writes past the end of the buffer.
+
+**FIXED** alongside §1: the per-row copy is clamped to the window, and a row that would
+overflow reports once on stderr rather than truncating silently. The warning did not fire
+on room3, so 200 is not currently being reached there.
+
+The stack VLA itself (§8) is untouched.
 
 ### 3. `CudaKeyFrameStorage` is shared across three threads with no locking
 
@@ -284,6 +301,14 @@ those off a real run is the cheapest way to confirm.
 The companion buffer `mFeatVec` (`MAX_FEAT_PER_WORD*MAX_FEAT_VEC_SIZE` = 10000 uints
 against a total-feature-count copy of ~1000-1500) has ample headroom and is not at risk.
 
+**FIXED**: both buffers now carry capacities and grow in `addFeatureVector()`. The
+enclosing `CudaKeyFrame` lives in managed memory and the GPU dereferences these pointers
+out of the struct, so swapping them needs no re-upload; pool slots are recycled without
+re-running the constructor, so a grown keyframe stays grown. `freeMemory()` zeroes the
+capacities so a reused slot cannot mistake freed pointers for live buffers. The two host
+scratch VLAs were replaced with `std::vector` sized to the actual node/feature counts,
+which also drops a needless `mFeatCount * 100` over-allocation.
+
 ### 16. Grid stride: one runtime constant, one compile-time constant — `CudaKeyFrame.cu:126,136`
 
 `flatMGrid` is strided by the runtime `CudaUtils::keypointsPerCell`; `flatMGridRight` by the
@@ -291,6 +316,29 @@ compile-time `KEYPOINTS_PER_CELL`. Both are 20 today so the two agree and nothin
 this is purely latent, and bites the moment `keypointsPerCell` is tuned. Neither loop caps
 `num_keypoints` per cell against the stride either, so a dense cell overruns into the next
 one (same shape as §2).
+
+## Regression check on the fixes
+
+room3 was chosen because it is one of the few sequences with **full-length** ground truth
+— EuRoC and the TUM-VI `room` sequences have continuous mocap, while the other TUM-VI
+sequences are only covered at the start and end, inside the mocap room. ATE on the rest is
+therefore a start/end measurement, not a whole-trajectory one.
+
+| build | n | mean ATE | values |
+|---|---|---|---|
+| HEAD without §1/§2/§15 | 4 | 0.01119 | 0.00834, 0.00859, 0.01335, 0.01448 |
+| HEAD with §1/§2/§15 | 4 | 0.00999 | 0.00797, 0.01006, 0.01085, 0.01108 |
+| pre-patch (`Results-tumvi`) | 5 | 0.00830 | 0.00704 - 0.01033 |
+
+Mann-Whitney on the first two rows gives U=6 at n=4,4 — not significant, so the fixes make
+no detectable difference to accuracy, and certainly do not make it worse.
+
+Separately worth noting: the shift from 0.00830 to 0.01119 is present in HEAD *without*
+these fixes, so it comes from the GPU-path changes in `7479e85`/`052f855` (rotation
+re-projection, resizable kernel buffers), not from anything here. n is small and the
+Mann-Whitney against the pre-patch runs is p≈0.09, so it is suggestive rather than
+established — but room3 has trustworthy full-length ground truth, which makes it worth
+a look before the next full batch.
 
 ## Not defects (checked and clear)
 

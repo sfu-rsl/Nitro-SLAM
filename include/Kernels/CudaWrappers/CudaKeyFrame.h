@@ -80,6 +80,11 @@ class CudaKeyFrame {
         int mFeatCount;
         unsigned int *mFeatVec;
         int *mFeatVecStartIndexes;
+        // Capacities of the two buffers above, in elements. The BoW node count per
+        // keyframe is vocabulary- and scene-dependent and routinely exceeds the old
+        // fixed MAX_FEAT_VEC_SIZE, so addFeatureVector() grows them on demand.
+        size_t featVecCapacity;
+        size_t featStartIdxCapacity;
 };
 }
 

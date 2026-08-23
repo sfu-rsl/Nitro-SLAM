@@ -2,6 +2,7 @@
 #include <cmath>
 
 #include "Kernels/StereoMatchKernel.h"
+#include <algorithm>
 #include <fstream>
 
 __device__ double normL1(const uchar* src1, const uchar* src2, int imgWidth, int level, int origImageSize,
@@ -374,8 +375,11 @@ void StereoMatchKernel::launch(std::vector<std::vector<int>> &vRowIndices, uchar
     std::chrono::steady_clock::time_point startCopyObjectCreation = std::chrono::steady_clock::now();
 #endif
 
-    int vRowIndicesFlat[nRows * MAX_FEATURES_IN_ROW_SLIDING_WINDOW] = {-1};
-    flattenVRowIndices(vRowIndices, vRowIndicesFlat);
+    // Not `= {-1}`: on a VLA that sets element 0 only and value-initialises the rest to
+    // 0, which the kernel reads as right-keypoint index 0 rather than end-of-list.
+    // flattenVRowIndices() fills every slot, padding included.
+    int vRowIndicesFlat[nRows * MAX_FEATURES_IN_ROW_SLIDING_WINDOW];
+    flattenVRowIndices(vRowIndices, vRowIndicesFlat, nRows);
 
     TRACKING_DATA_WRAPPER::CudaKeyPoint gpuKeypointsL[N], gpuKeypointsR[Nr];
     copyGPUKeypoints(mvKeys, gpuKeypointsL);
@@ -618,9 +622,37 @@ std::vector<std::pair<int, int>> StereoMatchKernel::convertToVectorOfPairs(int* 
     return vec;
 }
 
-void StereoMatchKernel::flattenVRowIndices(const std::vector<std::vector<int>>& input, int* flat) {
-    for (int i = 0; i < input.size(); i++)
-        memcpy(flat + i*MAX_FEATURES_IN_ROW_SLIDING_WINDOW, input[i].data(), sizeof(int) * input[i].size());
+// findBestStereoMatchKernel walks a row's whole slot window and stops at the first -1, so
+// every slot the row does not fill has to hold -1. Two separate defects lived here:
+//
+//   * the padding was never written as -1 (see the caller), so the loop ran all
+//     MAX_FEATURES_IN_ROW_SLIDING_WINDOW slots and scored each left keypoint against
+//     right-keypoint 0 once per empty slot;
+//   * the copy length came from input[i].size() with no clamp, so a row holding more
+//     candidates than the window spilled into the next row's slots, and the last row
+//     past the end of the buffer.
+//
+// `rows` is the row capacity of `flat`, which must match what the caller allocated.
+void StereoMatchKernel::flattenVRowIndices(const std::vector<std::vector<int>>& input, int* flat, int rows) {
+    std::fill_n(flat, (size_t)rows * MAX_FEATURES_IN_ROW_SLIDING_WINDOW, -1);
+
+    const size_t nRowsToCopy = std::min(input.size(), (size_t)rows);
+    for (size_t i = 0; i < nRowsToCopy; i++) {
+        const size_t n = std::min(input[i].size(), (size_t)MAX_FEATURES_IN_ROW_SLIDING_WINDOW);
+        if (n > 0)
+            memcpy(flat + i*MAX_FEATURES_IN_ROW_SLIDING_WINDOW, input[i].data(), sizeof(int) * n);
+        if (input[i].size() > (size_t)MAX_FEATURES_IN_ROW_SLIDING_WINDOW) {
+            // Truncating loses candidate matches for that row. Report once rather than
+            // per frame; if this ever fires the window needs raising.
+            static bool warned = false;
+            if (!warned) {
+                warned = true;
+                std::cerr << "[StereoMatchKernel:] row " << i << " has " << input[i].size()
+                          << " candidates, truncated to " << MAX_FEATURES_IN_ROW_SLIDING_WINDOW
+                          << " (further truncations not reported)" << std::endl;
+            }
+        }
+    }
 }
 
 void StereoMatchKernel::copyGPUKeypoints(const std::vector<cv::KeyPoint> keypoints, TRACKING_DATA_WRAPPER::CudaKeyPoint* out) {
