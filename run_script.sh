@@ -132,10 +132,10 @@ if [ "$save_ostream" -eq 0 ]; then
 else
     if $found_in_euroc; then
         cd Examples/
-        ./euroc_eval_examples.sh "$FastTrack_on" "$TurboMap_on" "$FastLoop_on" "$kernel_status_FT" "$kernel_status_TM" "$kernel_status_FL" "$dataset_name" "../$statsDir" > "../${statsDir}/ostream.txt" 
+        ./euroc_eval_examples.sh "$FastTrack_on" "$TurboMap_on" "$FastLoop_on" "$kernel_status_FT" "$kernel_status_TM" "$kernel_status_FL" "$dataset_name" "../$statsDir" > "../${statsDir}/ostream.txt" 2> "../${statsDir}/stderr.txt" 
     elif $found_in_tumvi; then
         cd Examples/
-        ./tum_vi_eval_examples.sh "$FastTrack_on" "$TurboMap_on" "$FastLoop_on" "$kernel_status_FT" "$kernel_status_TM" "$kernel_status_FL" "$dataset_name" "../$statsDir" > "../${statsDir}/ostream.txt" 
+        ./tum_vi_eval_examples.sh "$FastTrack_on" "$TurboMap_on" "$FastLoop_on" "$kernel_status_FT" "$kernel_status_TM" "$kernel_status_FL" "$dataset_name" "../$statsDir" > "../${statsDir}/ostream.txt" 2> "../${statsDir}/stderr.txt" 
     else
         echo "Invalid dataset: $dataset_name"
         exit 1

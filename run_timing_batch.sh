@@ -46,8 +46,8 @@ run_timeout() {
     esac
 }
 
-for i in $(seq 0 $((num_itr - 1))); do
-    for dataset in "${datasets[@]}"; do
+for dataset in "${datasets[@]}"; do
+    for i in $(seq 0 $((num_itr - 1))); do
         for cfg in "0 0 0" "1 1 1"; do
             set -- $cfg
             if [ "$1" -eq 1 ]; then
