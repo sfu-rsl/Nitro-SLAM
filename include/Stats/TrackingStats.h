@@ -41,6 +41,14 @@ class TrackingStats: public StatsInterface {
         std::vector<std::pair<long unsigned int, double>> SLP_searchByProjection_time;
         std::vector<std::pair<long unsigned int, double>> TLM_poseOptimization_time;
         std::vector<std::pair<long unsigned int, int>> num_local_mappoints;
+        // Diagnostics for tracking-loss investigation. num_local_mappoints alone cannot
+        // distinguish "matched too few of a healthy local map" from "matched plenty but
+        // the optimiser rejected them", and neither shows whether local mapping has
+        // fallen behind tracking.
+        std::vector<std::pair<long unsigned int, int>> num_slp_to_match;      // candidates in view
+        std::vector<std::pair<long unsigned int, int>> num_slp_matches;       // SearchByProjection result
+        std::vector<std::pair<long unsigned int, int>> num_matches_inliers;   // survivors of PoseOptimization
+        std::vector<std::pair<long unsigned int, int>> localmapper_queue;     // KFs waiting in LocalMapping
 
         double orbExtraction_init_time;
         double stereoMatch_init_time;

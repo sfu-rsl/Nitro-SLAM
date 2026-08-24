@@ -45,6 +45,97 @@ Two caveats worth keeping in view. Raising the cap does not make a >25000 local 
 bit 5 clear) appeared to dodge the crash 3/3, but that is incidental: it perturbs the
 corrected map into a different size, it does not remove the cap.
 
+## B. outdoors3 tracking loss — GPU fuse and GPU keyframe culling, ablated
+
+**Finding: GPU Fuse (`kernel_status_TM` bit 2) and GPU KeyFrame Culling (bit 3) each
+independently cause the outdoors3 tracking loss. Triangulation and local BA do not.**
+
+ORB-SLAM3 tracks outdoors3 cleanly in 5/5 runs. Full Nitro-SLAM loses tracking mid-sequence
+and resets the map. 11 configs, one run each, on outdoors3:
+
+| config | tri | fuse | cull | lba | maps | failTLM | 1st fail | GT pairs | ATE (m) |
+|---|---|---|---|---|---|---|---|---|---|
+| baseline (all CPU) | . | . | . | . | 1 | 0 | - | 2381 | 66.8 |
+| ft-only (GPU tracking) | - | - | - | - | 1 | 0 | - | 2381 | 56.2 |
+| fl-only (GPU loop close) | - | - | - | - | 1 | 0 | - | 2381 | 67.6 |
+| tm-none `0000` | . | . | . | . | 1 | 0 | - | 2381 | 70.3 |
+| tm-tri `1000` | Y | . | . | . | 1 | 0 | - | 2381 | 87.4 |
+| tm-lba `0001` | . | . | . | Y | 1 | 0 | - | 2381 | 81.7 |
+| tm-tri-lba `1001` | Y | . | . | Y | 1 | 0 | - | 2381 | 78.7 |
+| **tm-fuse `0100`** | . | **Y** | . | . | **2** | 122 | 11656 | 1208 | 0.012 |
+| **tm-cull `0010`** | . | . | **Y** | . | **2** | 247 | 11825 | 1208 | 0.012 |
+| tm-no-tri `0111` | . | Y | Y | Y | 2 | 137 | 11585 | 1208 | 0.012 |
+| tm-no-fuse `1011` | Y | . | Y | Y | 2 | 146 | 11246 | 1208 | 0.012 |
+| tm-no-cull `1101` | Y | Y | . | Y | 2 | 156 | 11220 | 1208 | 0.012 |
+| tm-no-lba `1110` | Y | Y | Y | . | 2 | 206 | 11502 | 1208 | 0.013 |
+| tm-all `1111` | Y | Y | Y | Y | 2 | 111 | 10893 | 1208 | 0.013 |
+
+Every row obeys one rule with no exceptions: **a run fails if and only if fuse or culling is
+enabled.** `tm-tri-lba` was run afterwards as an out-of-sample test of that rule and came out
+clean as predicted.
+
+The ~0.012 m ATE on failing runs is an artefact, not an improvement: after the map resets the
+evaluator matches only 1208 of the 2381 GT pairs, i.e. one of outdoors3's two mocap segments,
+scoring a short pre-drift stretch. Any run reporting 1208 pairs should be excluded.
+
+### Why the leave-one-out sweep found nothing
+
+Removing one kernel at a time left the failure intact in all four cases, which looked like
+cumulative degradation. It is not. Each leave-one-out config still contained at least one of
+fuse/cull, so a single removal could never recover. Leave-one-out cannot isolate two
+independent sufficient causes -- worth remembering before running that design again.
+
+### Mechanism
+
+Fuse and culling are the two *destructive* mapping operations: fuse replaces one map point
+with another it judges to be a duplicate, culling deletes keyframes judged redundant.
+Triangulation and LBA only add or adjust. A wrong destructive decision does not merely add a
+bad point, it removes a good observation, which is exactly the measured signature:
+
+| window (tm-only vs baseline) | projected | matched | inliers |
+|---|---|---|---|
+| frames 2000-4000 | 780 vs 815 | 412 vs 420 | 302 vs 302 |
+| just before failure | 765 vs 645 | 204 vs 243 | 114 vs 175 |
+| failing window | 561 vs 620 | 93 vs 284 | 9 vs 215 |
+
+Map points keep projecting into view in normal numbers -- *more* than baseline -- but match at
+a lower rate and are then rejected as geometric outliers by pose optimisation. Errors
+accumulate for ~11k frames before a demanding stretch tips tracking over; the failure onset is
+consistent (10893-11825) across every failing config.
+
+Once `trackLocalMap` fails the collapse is self-sustaining: state goes RECENTLY_LOST, velocity
+is cleared, the next frame cannot use the motion model, reference-keyframe tracking is weaker,
+fewer covisible keyframes are found, the local map shrinks, and it fails harder. Hence 111-247
+*consecutive* failures rather than scattered ones.
+
+### Ruled out
+
+- **Tracking and loop-closing kernels** -- clean on their own.
+- **The GPU keyframe mirror** (`CudaKeyFrameAllocator::create` + `addFeatureVector`, gated on
+  `MappingKernelController::is_active`, so it runs in every TurboMap config including
+  `tm-none`) -- `tm-none` is clean, so neither the mirroring infrastructure nor the
+  per-keyframe overhead it adds to LocalMapping is responsible.
+- **Tracking outrunning local mapping.** Playback is paced to sequence timestamps
+  (`stereo_inertial_tum_vi.cc:359`, `NITRO_NO_PACING` never set), keyframe counts match the
+  baseline (last KF id 4765 vs 4744), and `KeyframesInQueue()` sampled per frame was 0 in every
+  clean run and 0.0 through the 300 frames before every failure. Caveat: that sample is taken
+  in `TrackLocalMap`, which runs before `CreateNewKeyFrame`, so it cannot see transient
+  backlog at insert time.
+
+### Working configuration
+
+`kernel_status_TM = 1001` keeps GPU triangulation and LBA and tracks cleanly. Combined with
+the other subsystems, which are individually clean:
+
+```
+./run_script.sh outdoors3 1 1 1 1 <version> 11111 1001 001111
+```
+
+Not yet measured as a combination -- only the TurboMap-alone configs above were run.
+
+Reproduce with `./run_ablation_tracking.sh` (subsystem sweep) and `./run_ablation_turbomap.sh`
+(kernel bisect), scored by `./score_tracking_ablation.py`.
+
 ## Confirmed defects
 
 ### 0. Gaussian blur kernel uses sigma where sigma^2 is required — `ORBextractor.cc:165`

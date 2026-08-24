@@ -20,6 +20,30 @@ void TrackingStats::saveStats(const string &file_path) {
 
     TrackingKernelController::saveKernelsStats(data_path);
 
+    myfile.open(data_path + "/num_slp_to_match.txt");
+    for (const auto& p : num_slp_to_match) {
+        myfile << p.first << ": " << p.second << std::endl;
+    }
+    myfile.close();
+
+    myfile.open(data_path + "/num_slp_matches.txt");
+    for (const auto& p : num_slp_matches) {
+        myfile << p.first << ": " << p.second << std::endl;
+    }
+    myfile.close();
+
+    myfile.open(data_path + "/num_matches_inliers.txt");
+    for (const auto& p : num_matches_inliers) {
+        myfile << p.first << ": " << p.second << std::endl;
+    }
+    myfile.close();
+
+    myfile.open(data_path + "/localmapper_queue.txt");
+    for (const auto& p : localmapper_queue) {
+        myfile << p.first << ": " << p.second << std::endl;
+    }
+    myfile.close();
+
     myfile.open(data_path + "/tracking_time.txt");
     for (const auto& p : tracking_time) {
         myfile << p.first << ": " << p.second << std::endl;

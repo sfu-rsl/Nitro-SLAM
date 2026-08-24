@@ -18,6 +18,7 @@
 
 
 #include "Tracking.h"
+#include <unistd.h>
 
 #include "ORBmatcher.h"
 #include "FrameDrawer.h"
@@ -2735,6 +2736,17 @@ void Tracking::CreateInitialMapMonocular()
 
 void Tracking::CreateMapInAtlas()
 {
+    // Debug aid (NITRO_EXIT_ON_TRACKING_LOSS=1): a new map here means tracking was lost
+    // and could not relocalise. When reproducing a tracking-loss bug there is nothing to
+    // learn from the remaining frames, so stop immediately and keep the iteration short.
+    // _exit() rather than exit(): the worker threads are mid-flight and running static
+    // destructors under them tends to abort with a less informative message.
+    if (getenv("NITRO_EXIT_ON_TRACKING_LOSS")) {
+        std::cerr << "[EXIT-ON-LOSS] tracking lost, new map created at frame "
+                  << mCurrentFrame.mnId << std::endl;
+        std::cerr.flush(); std::cout.flush();
+        _exit(42);
+    }
     mnLastInitFrameId = mCurrentFrame.mnId;
     mpAtlas->CreateNewMap();
     if (mSensor==System::IMU_STEREO || mSensor == System::IMU_MONOCULAR || mSensor == System::IMU_RGBD)
@@ -3181,6 +3193,12 @@ bool Tracking::TrackLocalMap()
     // Decide if the tracking was succesful
     // More restrictive if there was a relocalization recently
     mpLocalMapper->mnMatchesInliers=mnMatchesInliers;
+#ifdef REGISTER_TRACKING_STATS
+    TrackingStats::getInstance().num_matches_inliers.emplace_back(mCurrentFrame.mnId, mnMatchesInliers);
+    // Queue depth at the moment tracking consumes the map: the direct measure of local
+    // mapping falling behind tracking.
+    TrackingStats::getInstance().localmapper_queue.emplace_back(mCurrentFrame.mnId, mpLocalMapper->KeyframesInQueue());
+#endif
     if(mCurrentFrame.mnId<mnLastRelocFrameId+mMaxFrames && mnMatchesInliers<50)
         return false;
 
@@ -3586,6 +3604,8 @@ void Tracking::SearchLocalPoints()
     double searchByProjection = std::chrono::duration_cast<std::chrono::duration<double,std::milli> >(SBP_end - SBP_start).count();
     TrackingStats::getInstance().SLP_searchByProjection_time.emplace_back(mCurrentFrame.mnId, searchByProjection);
     TrackingStats::getInstance().num_local_mappoints.emplace_back(mCurrentFrame.mnId, mvpLocalMapPoints.size());
+    TrackingStats::getInstance().num_slp_to_match.emplace_back(mCurrentFrame.mnId, nToMatch);
+    TrackingStats::getInstance().num_slp_matches.emplace_back(mCurrentFrame.mnId, matches);
 #endif
     }
 #ifdef REGISTER_TRACKING_STATS  

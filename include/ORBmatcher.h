@@ -94,6 +94,11 @@ namespace ORB_SLAM3
         // GPU: Project MapPoints into KeyFrame and search for duplicated MapPoints.
         int GPUFuse(KeyFrame *neighKF, const vector<MapPoint*> &vpMapPoints, const float th=3.0, const bool bRight = false);
         int GPUFuseV2(vector<KeyFrame*> neighKFs, KeyFrame *currKF, const float th=3.0);
+        // Reference implementation of the per-(keyframe, map point) search that Fuse()
+        // performs, factored out so the GPU kernel's answer can be compared against it
+        // without mutating any state. Validation only.
+        static void FuseBestMatchCPU(KeyFrame* pKF, MapPoint* pMP, float th, bool bRight,
+                                     int &bestDist, int &bestIdx);
 
         // Project MapPoints into KeyFrame using a given Sim3 and search for duplicated MapPoints.
         int Fuse(KeyFrame* pKF, Sophus::Sim3f &Scw, const std::vector<MapPoint*> &vpPoints, float th, vector<MapPoint *> &vpReplacePoint);

@@ -91,6 +91,17 @@ namespace MAPPING_DATA_WRAPPER
         checkCudaError(cudaMemcpy(mvInvLevelSigma2, KF->mvInvLevelSigma2.data(), mvInvLevelSigma2_size * sizeof(float), cudaMemcpyHostToDevice), "CudaKeyFrame:: Failed to copy mvInvLevelSigma2 to gpu");
         
         mvuRight_size = KF->mvuRight.size();
+        {
+            static bool once = false;
+            if (!once) { once = true;
+                std::cerr << "[SIZES] nFeatures_with_th=" << CudaUtils::nFeatures_with_th
+                          << " N=" << KF->N << " NLeft=" << KF->NLeft
+                          << " mvKeys=" << KF->mvKeys.size()
+                          << " mvKeysRight=" << KF->mvKeysRight.size()
+                          << " mvuRight=" << KF->mvuRight.size()
+                          << " mvKeysUn=" << KF->mvKeysUn.size()
+                          << " mDescriptors.rows=" << KF->mDescriptors.rows << std::endl; }
+        }
         checkCudaError(cudaMemcpy(mvuRight, KF->mvuRight.data(), mvuRight_size * sizeof(float), cudaMemcpyHostToDevice), "CudaKeyFrame:: Failed to copy mvuRight to gpu");
         
         mDescriptor_rows = KF->mDescriptors.rows;
@@ -123,11 +134,22 @@ namespace MAPPING_DATA_WRAPPER
         }
         checkCudaError(cudaMemcpy(mvKeysUn, tmp_mvKeysUn.data(), mvKeysUn_size * sizeof(CudaKeyPoint), cudaMemcpyHostToDevice), "CudaKeyFrame:: Failed to copy mvKeysUn to gpu");
 
+        // flatMGrid/flatMGridRight give each cell a fixed KEYPOINTS_PER_CELL slots, but a
+        // grid cell is an unbounded vector on the CPU side. Copying its full size wrote
+        // over the following cell (and past the array on the last one), and recording the
+        // uncapped count made the kernel read beyond the cell as well -- which is how it
+        // produced right-image indices past NRight that then indexed keyframe arrays out
+        // of bounds. Clamp both the copy and the recorded size.
         int keypoints_per_cell = CudaUtils::keypointsPerCell;
+        if (keypoints_per_cell > KEYPOINTS_PER_CELL)
+            keypoints_per_cell = KEYPOINTS_PER_CELL;   // never exceed the allocated stride
+        static size_t maxCellSeen = 0, nDropped = 0;
         for (int i = 0; i < mnGridCols; ++i) {
             for (int j = 0; j < mnGridRows; ++j) {
                 size_t num_keypoints = KF->getMGrid()[i][j].size();
                 if (num_keypoints > 0) {
+                    if (num_keypoints > maxCellSeen) maxCellSeen = num_keypoints;
+                    if (num_keypoints > (size_t)keypoints_per_cell) { nDropped += num_keypoints - keypoints_per_cell; num_keypoints = keypoints_per_cell; }
                     std::memcpy(&flatMGrid[(i * mnGridRows + j) * keypoints_per_cell], KF->getMGrid()[i][j].data(), num_keypoints * sizeof(std::size_t));
                 }
                 flatMGrid_size[i * mnGridRows + j] = num_keypoints;
@@ -139,6 +161,8 @@ namespace MAPPING_DATA_WRAPPER
                 for (int j = 0; j < mnGridRows; ++j) {
                     size_t num_keypoints = KF->mGridRight[i][j].size();
                     if (num_keypoints > 0) {
+                        if (num_keypoints > maxCellSeen) maxCellSeen = num_keypoints;
+                        if (num_keypoints > (size_t)KEYPOINTS_PER_CELL) { nDropped += num_keypoints - KEYPOINTS_PER_CELL; num_keypoints = KEYPOINTS_PER_CELL; }
                         std::memcpy(&flatMGridRight[(i * mnGridRows + j) * KEYPOINTS_PER_CELL], KF->mGridRight[i][j].data(), num_keypoints * sizeof(std::size_t));
                     }
                     flatMGridRight_size[i * mnGridRows + j] = num_keypoints;
@@ -146,6 +170,12 @@ namespace MAPPING_DATA_WRAPPER
             }
         }
 
+        {
+            static size_t nKF = 0;
+            if ((++nKF % 500) == 0)
+                std::cerr << "[GRIDCAP] keyframes=" << nKF << " maxCellOccupancy=" << maxCellSeen
+                          << " (stride " << KEYPOINTS_PER_CELL << ") droppedEntries=" << nDropped << std::endl;
+        }
         copyGPUCamera(&camera1, KF->mpCamera);
         copyGPUCamera(&camera2, KF->mpCamera2);
     }

@@ -1408,7 +1408,11 @@ namespace ORB_SLAM3
                     continue;
                 }
 
-                if(pKF->mvuRight[idx]>=0)
+                // See FuseKernel.cu: mvuRight is sized NLeft, while the right-image pass
+                // indexes it with a local right index up to NRight-1. The tail entries were
+                // an out-of-bounds vector read; right keypoints without a stereo
+                // measurement belong in the monocular branch.
+                if(idx < pKF->mvuRight.size() && pKF->mvuRight[idx]>=0)
                 {
                     // Check reprojection error in stereo
                     const float &kpx = kp.pt.x;
@@ -1544,6 +1548,73 @@ namespace ORB_SLAM3
         return nFused;
     }
 
+    // Mirrors the body of Fuse() for a single map point, returning the match it would
+    // have chosen instead of acting on it. Kept deliberately literal so that any drift
+    // between this and Fuse() is obvious on inspection.
+    void ORBmatcher::FuseBestMatchCPU(KeyFrame* pKF, MapPoint* pMP, float th, bool bRight,
+                                      int &bestDist, int &bestIdx)
+    {
+        bestDist = 256; bestIdx = -1;
+
+        Sophus::SE3f Tcw;
+        Eigen::Vector3f Ow;
+        GeometricCamera* pCamera;
+        if(bRight){ Tcw = pKF->GetRightPose(); Ow = pKF->GetRightCameraCenter(); pCamera = pKF->mpCamera2; }
+        else      { Tcw = pKF->GetPose();      Ow = pKF->GetCameraCenter();      pCamera = pKF->mpCamera;  }
+        const float &bf = pKF->mbf;
+
+        if(!pMP || pMP->isBad() || pMP->IsInKeyFrame(pKF)) return;
+
+        Eigen::Vector3f p3Dw = pMP->GetWorldPos();
+        Eigen::Vector3f p3Dc = Tcw * p3Dw;
+        if(p3Dc(2)<0.0f) return;
+
+        const float invz = 1/p3Dc(2);
+        const Eigen::Vector2f uv = pCamera->project(p3Dc);
+        if(!pKF->IsInImage(uv(0),uv(1))) return;
+
+        const float ur = uv(0)-bf*invz;
+        const float maxDistance = pMP->GetMaxDistanceInvariance();
+        const float minDistance = pMP->GetMinDistanceInvariance();
+        Eigen::Vector3f PO = p3Dw-Ow;
+        const float dist3D = PO.norm();
+        if(dist3D<minDistance || dist3D>maxDistance) return;
+
+        Eigen::Vector3f Pn = pMP->GetNormal();
+        if(PO.dot(Pn)<0.5*dist3D) return;
+
+        int nPredictedLevel = pMP->PredictScale(dist3D,pKF);
+        const float radius = th*pKF->mvScaleFactors[nPredictedLevel];
+        const vector<size_t> vIndices = pKF->GetFeaturesInArea(uv(0),uv(1),radius,bRight);
+        if(vIndices.empty()) return;
+
+        const cv::Mat dMP = pMP->GetDescriptor();
+        for(vector<size_t>::const_iterator vit=vIndices.begin(), vend=vIndices.end(); vit!=vend; vit++)
+        {
+            size_t idx = *vit;
+            const cv::KeyPoint &kp = (pKF -> NLeft == -1) ? pKF->mvKeysUn[idx]
+                                                          : (!bRight) ? pKF -> mvKeys[idx]
+                                                                      : pKF -> mvKeysRight[idx];
+            const int &kpLevel = kp.octave;
+            if(kpLevel<nPredictedLevel-1 || kpLevel>nPredictedLevel) continue;
+
+            if(idx < pKF->mvuRight.size() && pKF->mvuRight[idx]>=0)
+            {
+                const float ex = uv(0)-kp.pt.x, ey = uv(1)-kp.pt.y, er = ur-pKF->mvuRight[idx];
+                if((ex*ex+ey*ey+er*er)*pKF->mvInvLevelSigma2[kpLevel]>7.8) continue;
+            }
+            else
+            {
+                const float ex = uv(0)-kp.pt.x, ey = uv(1)-kp.pt.y;
+                if((ex*ex+ey*ey)*pKF->mvInvLevelSigma2[kpLevel]>5.99) continue;
+            }
+
+            if(bRight) idx += pKF->NLeft;
+            const int dist = DescriptorDistance(dMP, pKF->mDescriptors.row(idx));
+            if(dist<bestDist){ bestDist = dist; bestIdx = idx; }
+        }
+    }
+
     int ORBmatcher::GPUFuseV2(vector<KeyFrame*> neighKFs, KeyFrame *currKF, const float th)
     {
         int nFused = 0;
@@ -1558,19 +1629,61 @@ namespace ORB_SLAM3
 
         MappingKernelController::launchFuseKernelV2(neighKFs, currKF, th, validMapPoints, bestDists, bestIdxs);
         int validMapPointsSize = validMapPoints.size();
-        vector<bool> mapPointToSkip(validMapPointsSize, false);
 
+        // Validation (NITRO_VALIDATE_FUSE=1): snapshot the CPU answer for every pair
+        // BEFORE the fusion loop runs. Replace()/AddObservation() below call
+        // ComputeDistinctiveDescriptors(), so comparing inside the loop would diff
+        // against already-mutated descriptors and manufacture false mismatches.
+        static const bool kValidateFuse = (getenv("NITRO_VALIDATE_FUSE") != nullptr);
+        vector<int> refDistL, refIdxL, refDistR, refIdxR;
+        if (kValidateFuse) {
+            refDistL.assign((size_t)numNeighKFs*validMapPointsSize, 256);
+            refIdxL.assign((size_t)numNeighKFs*validMapPointsSize, -1);
+            refDistR.assign((size_t)numNeighKFs*validMapPointsSize, 256);
+            refIdxR.assign((size_t)numNeighKFs*validMapPointsSize, -1);
+            for (int iKF = 0; iKF < numNeighKFs; iKF++)
+                for (size_t iMP = 0; iMP < (size_t)validMapPointsSize; iMP++) {
+                    const size_t k = (size_t)iKF*validMapPointsSize + iMP;
+                    FuseBestMatchCPU(neighKFs[iKF], validMapPoints[iMP], th, false, refDistL[k], refIdxL[k]);
+                    if (currKF->NLeft != -1)
+                        FuseBestMatchCPU(neighKFs[iKF], validMapPoints[iMP], 3.0, true, refDistR[k], refIdxR[k]);
+                }
+        }
+
+        // Both passes re-test isBad() and IsInKeyFrame() against the keyframe currently
+        // being fused, exactly as the CPU Fuse() does for every (keyframe, map point)
+        // pair. A previous version hoisted a `mapPointToSkip` flag vector out of this
+        // loop, which was wrong three ways: the flag was never reset between keyframes,
+        // so a point already observed by an *earlier* target was skipped for every later
+        // one; the right-image pass consulted only that flag and so never checked the
+        // current keyframe at all; and Replace() below marks pMP bad without setting the
+        // flag, so the right-image pass then called AddObservation()/Replace() on a
+        // map point that had just been destroyed.
         for (int iKF = 0; iKF < numNeighKFs; iKF++) {
             for (size_t iMP = 0; iMP < validMapPointsSize; iMP++) {
                 MapPoint* pMP = validMapPoints[iMP];
-                if (pMP->IsInKeyFrame(neighKFs[iKF]) || pMP->isBad()) {
-                    mapPointToSkip[iMP] = true;
+                if (pMP->isBad() || pMP->IsInKeyFrame(neighKFs[iKF]))
                     continue;
-                }
 
                 int idx = (currKF->NLeft == -1) ? iKF*validMapPointsSize + iMP : iKF*validMapPointsSize*2 + iMP; 
                 int bestDist = bestDists[idx];
                 int bestIdx = bestIdxs[idx];
+
+                if (kValidateFuse) {
+                    const size_t k = (size_t)iKF*validMapPointsSize + iMP;
+                    const int refDist = refDistL[k], refIdx = refIdxL[k];
+                    static long long nchk=0, nbad=0; nchk++;
+                    if (refIdx != bestIdx || refDist != bestDist) {
+                        nbad++;
+                        if (nbad <= 25)
+                            std::cerr << "[FUSECHK-L] KF=" << neighKFs[iKF]->mnId << " MP=" << pMP->mnId
+                                      << " gpu=(" << bestDist << "," << bestIdx << ")"
+                                      << " cpu=(" << refDist << "," << refIdx << ")"
+                                      << " NLeft=" << neighKFs[iKF]->NLeft << std::endl;
+                    }
+                    if ((nchk % 500000)==0)
+                        std::cerr << "[FUSECHK-L] checked=" << nchk << " mismatches=" << nbad << std::endl;
+                }
 
                 if (bestDist == 256 || bestIdx == -1)
                     continue;
@@ -1599,12 +1712,28 @@ namespace ORB_SLAM3
             if (currKF->NLeft != -1) {
                 for (size_t iMP = 0; iMP < validMapPointsSize; iMP++) {
                     MapPoint* pMP = validMapPoints[iMP];
-                    if (mapPointToSkip[iMP])
+                    if (pMP->isBad() || pMP->IsInKeyFrame(neighKFs[iKF]))
                         continue;
 
                     int idx = iKF*validMapPointsSize*2 + validMapPointsSize + iMP; 
                     int bestDist = bestDists[idx];
                     int bestIdx = bestIdxs[idx];
+
+                    if (kValidateFuse) {
+                        const size_t k = (size_t)iKF*validMapPointsSize + iMP;
+                        const int refDist = refDistR[k], refIdx = refIdxR[k];
+                        static long long nchkR=0, nbadR=0; nchkR++;
+                        if (refIdx != bestIdx || refDist != bestDist) {
+                            nbadR++;
+                            if (nbadR <= 25)
+                                std::cerr << "[FUSECHK-R] KF=" << neighKFs[iKF]->mnId << " MP=" << pMP->mnId
+                                          << " gpu=(" << bestDist << "," << bestIdx << ")"
+                                          << " cpu=(" << refDist << "," << refIdx << ")"
+                                          << " NLeft=" << neighKFs[iKF]->NLeft << std::endl;
+                        }
+                        if ((nchkR % 500000)==0)
+                            std::cerr << "[FUSECHK-R] checked=" << nchkR << " mismatches=" << nbadR << std::endl;
+                    }
 
                     if (bestDist == 256 || bestIdx == -1)
                         continue;

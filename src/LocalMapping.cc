@@ -1794,6 +1794,64 @@ void LocalMapping::KeyFrameCullingOptimized()
                         // octaves, see MapPoint::ObservationScaleLevel), so counting
                         // buckets <= scaleLevel+1 covers exactly the same keyframes.
                         const int nObs = pMP->CountScaleObservations(pKF, scaleLevel+1, thObs);
+                        // TEMP validation (NITRO_VALIDATE_CULL=1): recompute the count the
+                        // way KeyFrameCulling() does and report any disagreement. The two
+                        // are supposed to be equivalent; this proves it on real data.
+                        // Hoisted: this guard sits in a ~20M-iteration loop, so a
+                        // getenv() per map point would distort the timings it coexists with.
+                        static const bool kValidateCull = (getenv("NITRO_VALIDATE_CULL") != nullptr);
+                        if (kValidateCull) {
+                            const map<KeyFrame*, tuple<int,int>> obsv = pMP->GetObservations();
+                            int ref = 0;
+                            for (auto mit = obsv.begin(); mit != obsv.end(); mit++) {
+                                KeyFrame* pKFi = mit->first;
+                                if (pKFi == pKF) continue;
+                                tuple<int,int> ix = mit->second;
+                                int li = get<0>(ix), ri = get<1>(ix);
+                                int sli = -1;
+                                if (pKFi->NLeft == -1) sli = pKFi->mvKeysUn[li].octave;
+                                else {
+                                    if (li != -1) sli = pKFi->mvKeys[li].octave;
+                                    if (ri != -1) {
+                                        int rl = pKFi->mvKeysRight[ri - pKFi->NLeft].octave;
+                                        sli = (sli == -1 || sli > rl) ? rl : sli;
+                                    }
+                                }
+                                if (sli <= scaleLevel+1) { ref++; if (ref > thObs) break; }
+                            }
+                            static long long nchk = 0, nbad = 0;
+                            nchk++;
+                            // Only the >thObs verdict matters; both loops early-exit.
+                            if ((ref > thObs) != (nObs > thObs)) {
+                                nbad++;
+                            if (nbad <= 20) {
+                                // Is pKF's own bucket inside the summed range?
+                                // CountScaleObservations discounts the self vote
+                                // unconditionally, which is only correct if it is.
+                                const map<KeyFrame*, tuple<int,int>> selfobs = pMP->GetObservations();
+                                auto sit = selfobs.find(pKF);
+                                int selfBucket = -99;
+                                if (sit != selfobs.end())
+                                    selfBucket = MapPoint::ObservationScaleLevel(pKF, sit->second);
+                                std::cerr << "[CULLCHK] mismatch KF=" << pKF->mnId
+                                          << " MP=" << pMP->mnId << " i=" << i
+                                          << " NLeft=" << pKF->NLeft
+                                          << " scaleLevel=" << scaleLevel
+                                          << " selfBucket=" << selfBucket
+                                          << " selfInRange=" << ((selfBucket>=0 && selfBucket<=scaleLevel+1)?1:0)
+                                          << " hist=" << nObs << " walk=" << ref
+                                          << " nkfs=" << selfobs.size() << std::endl;
+                            }
+                            static const bool kExitOnMismatch = (getenv("NITRO_EXIT_ON_CULL_MISMATCH") != nullptr);
+                            if (kExitOnMismatch) {
+                                std::cerr << "[CULLCHK] exiting on first mismatch" << std::endl;
+                                std::cerr.flush();
+                                _exit(43);
+                            }
+                            }
+                            if ((nchk % 2000000) == 0)
+                                std::cerr << "[CULLCHK] checked=" << nchk << " mismatches=" << nbad << std::endl;
+                        }
                         if (nObs > thObs) {
                             nRedundantObservations++;
                         }

@@ -242,7 +242,12 @@ __global__ void fuseKernel(MAPPING_DATA_WRAPPER::CudaMapPoint* currKFMapPoints, 
                     if (kpLevel < nPredictedLevel-1 || kpLevel > nPredictedLevel)
                         continue;
 
-                    if (neighKF->mvuRight[temp_idx] >= 0) {
+                    // mvuRight has one entry per LEFT keypoint (size NLeft), but the
+                    // right-image pass indexes it with a local right index running to
+                    // NRight-1. Right keypoints past that have no stereo measurement and
+                    // belong in the monocular branch; reading past the buffer returned
+                    // uninitialized device memory and produced matches the CPU never makes.
+                    if (temp_idx < neighKF->mvuRight_size && neighKF->mvuRight[temp_idx] >= 0) {
                         // Check reprojection error in stereo
                         const float &kpx = kpUn.ptx;
                         const float &kpy = kpUn.pty;
@@ -504,7 +509,12 @@ __global__ void fuseKernelV2(
                     if (kpLevel < nPredictedLevel-1 || kpLevel > nPredictedLevel)
                         continue;
 
-                    if (neighKF->mvuRight[temp_idx] >= 0) {
+                    // mvuRight has one entry per LEFT keypoint (size NLeft), but the
+                    // right-image pass indexes it with a local right index running to
+                    // NRight-1. Right keypoints past that have no stereo measurement and
+                    // belong in the monocular branch; reading past the buffer returned
+                    // uninitialized device memory and produced matches the CPU never makes.
+                    if (temp_idx < neighKF->mvuRight_size && neighKF->mvuRight[temp_idx] >= 0) {
                         // Check reprojection error in stereo
                         const float &kpx = kpUn.ptx;
                         const float &kpy = kpUn.pty;
@@ -814,7 +824,7 @@ void FuseKernel::origFuse(ORB_SLAM3::KeyFrame *pKF, const vector<ORB_SLAM3::MapP
                 continue;
             }
 
-            if(pKF->mvuRight[idx]>=0) {
+            if(idx < pKF->mvuRight.size() && pKF->mvuRight[idx]>=0) {
                 // Check reprojection error in stereo
                 const float &kpx = kp.pt.x;
                 const float &kpy = kp.pt.y;

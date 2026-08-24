@@ -269,7 +269,24 @@ int MapPoint::CountScaleObservations(KeyFrame* pKFExclude, int maxLevel, int sto
     // Membership and the histogram must come from one snapshot: another thread adding
     // or erasing an observation between two separate reads would leave the self-vote
     // discount disagreeing with the counts and flip the redundancy verdict.
-    int n = mObservations.count(pKFExclude) ? -1 : 0;
+    //
+    // The self vote may only be discounted when pKFExclude's own bucket is inside the
+    // range about to be summed. Its bucket is ObservationScaleLevel(), the *finer* of
+    // its two fisheye octaves, which is not tied to the octave the caller derived
+    // maxLevel from -- it can sit above maxLevel, in which case pKFExclude contributed
+    // nothing and subtracting one leaves the count short. That undercount is invisible
+    // except at the threshold, where it flips the redundancy verdict and keeps a
+    // keyframe that KeyFrameCulling() would have culled.
+    int n = 0;
+    {
+        auto it = mObservations.find(pKFExclude);
+        if(it != mObservations.end())
+        {
+            const int selfBucket = ObservationScaleLevel(pKFExclude, it->second);
+            if(selfBucket >= 0 && selfBucket <= maxLevel)
+                n = -1;
+        }
+    }
 
     const int last = std::min(maxLevel, (int)scaleObservationsCount.size()-1);
     for(int j = 0; j <= last; j++)
