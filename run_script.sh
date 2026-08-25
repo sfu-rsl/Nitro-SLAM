@@ -35,6 +35,12 @@ if [ -z "$system_name" ]; then
     system_name="ORB-SLAM3"
 fi
 
+# Headless batch runs: matplotlib resolves a backend at import time and blocks on
+# an unresponsive X server when DISPLAY is set, which hangs plot.py/evaluate3.py
+# *after* the sequence itself has finished and burns the whole watchdog timeout.
+# Nothing here draws to a screen, so pin the non-interactive backend.
+export MPLBACKEND=Agg
+
 # Defaults
 
 # FastTrack
@@ -79,7 +85,10 @@ if [ "$FastLoop_on" -eq 1 ]; then
     fi
 fi
 
-statsDir="./Results/${system_name}"
+# Results root, so a batch driver can send EuRoC and TUM-VI to separate trees
+# (Results-euroc / Results-tumvi, which the analysis scripts expect). Must stay
+# relative to the repo root -- the eval scripts run from Examples/ and prefix "../".
+statsDir="${RESULTS_ROOT:-./Results}/${system_name}"
 
 # Append kernel statuses only for enabled optimizations
 kernel_dir=""

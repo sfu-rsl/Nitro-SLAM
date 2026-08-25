@@ -1,25 +1,69 @@
 #!/bin/bash
 # Batch driver for the thread-breakdown timing study.
-#   ./run_timing_batch.sh <version> [num_iterations]
-# Runs every dataset under both ORB-SLAM3 (0 0 0) and Nitro-SLAM (1 1 1), and
+#   ./run_timing_batch.sh [group] [version] [num_iterations] [seq_filter]
+#
+# Runs one dataset group under both ORB-SLAM3 (0 0 0) and Nitro-SLAM (1 1 1), and
 # samples GPU/CPU memory alongside each run into <statsDir>/memory.csv.
+#
+# Groups (each writes into its own results root, so a group can be run, analysed
+# and archived without waiting on the others):
+#   euroc     11 EuRoC sequences                    -> Results-euroc
+#   tumvi     TUM-VI minus outdoors (20 sequences)  -> Results-tumvi
+#   outdoors  the 8 outdoors sequences              -> Results-tumvi
+#   all       everything                            -> Results
+#
+# outdoors shares the TUM-VI root on purpose: running it later merges into the
+# same tree the tumvi group built, so the analysis scripts see one TUM-VI set.
+#
+# Passes are interleaved -- pass 0 covers every sequence, then pass 1, and so on
+# -- so an interrupted job leaves equal iteration depth across sequences instead
+# of a complete set for the first few and nothing for the rest. Completed runs
+# are marked and skipped on a rerun, so resuming after an interrupt is just
+# re-issuing the same command (set FORCE=1 to redo them anyway).
+#
+# seq_filter restricts the group to sequences matching it, e.g.
+#   ./run_timing_batch.sh euroc desktop 1 MH01     # one sequence, one pass
 
 set -u
 
-version=${1:-timing}
-num_itr=${2:-5}
+group=${1:-euroc}
+version=${2:-desktop}
+num_itr=${3:-5}
+filter=${4:-}
 
-# Every EuRoC and TUM-VI sequence available under $HOME/SLAM/Datasets.
 # Keep in sync with the whitelists in run_script.sh.
 euroc_datasets=("MH01" "MH02" "MH03" "MH04" "MH05" \
                 "V101" "V102" "V103" "V201" "V202" "V203")
 tumvi_datasets=("corridor1" "corridor2" "corridor3" "corridor4" "corridor5" \
                 "magistrale1" "magistrale2" "magistrale3" "magistrale4" "magistrale5" "magistrale6" \
-                "outdoors1" "outdoors2" "outdoors3" "outdoors4" "outdoors5" "outdoors6" "outdoors7" "outdoors8" \
                 "room1" "room2" "room3" "room4" "room5" "room6" \
                 "slides1" "slides2" "slides3")
-datasets=("${euroc_datasets[@]}" "${tumvi_datasets[@]}")
+outdoors_datasets=("outdoors1" "outdoors2" "outdoors3" "outdoors4" \
+                   "outdoors5" "outdoors6" "outdoors7" "outdoors8")
+
+case "$group" in
+    euroc)    datasets=("${euroc_datasets[@]}");    RESULTS_ROOT=Results-euroc ;;
+    tumvi)    datasets=("${tumvi_datasets[@]}");    RESULTS_ROOT=Results-tumvi ;;
+    outdoors) datasets=("${outdoors_datasets[@]}"); RESULTS_ROOT=Results-tumvi ;;
+    all)      datasets=("${euroc_datasets[@]}" "${tumvi_datasets[@]}" "${outdoors_datasets[@]}")
+              RESULTS_ROOT=Results ;;
+    *)        echo "unknown group '$group' (expected euroc, tumvi, outdoors or all)"; exit 1 ;;
+esac
+if [ -n "$filter" ]; then
+    keep=()
+    for d in "${datasets[@]}"; do [[ "$d" =~ $filter ]] && keep+=("$d"); done
+    if [ ${#keep[@]} -eq 0 ]; then
+        echo "filter '$filter' matched no sequence in group '$group'"; exit 1
+    fi
+    datasets=("${keep[@]}")
+fi
+
+export RESULTS_ROOT   # read by run_script.sh
 interval=0.05
+LOG=timing_batch_${group}.log
+
+# Keep a durable record of a job that is expected to be interrupted and resumed.
+exec > >(tee -a "$LOG") 2>&1
 
 # Mirror run_script.sh's default kernel statuses so the stats path can be predicted
 # (the monitor writes into the same directory the run does). Read them out of
@@ -28,7 +72,8 @@ kFT=$(grep -E "^kernel_status_FT='" run_script.sh | head -1 | sed "s/.*'\([01]*\
 kTM=$(grep -E "^kernel_status_TM='" run_script.sh | head -1 | sed "s/.*'\([01]*\)'.*/\1/")
 kFL=$(grep -E "^kernel_status_FL='" run_script.sh | head -1 | sed "s/.*'\([01]*\)'.*/\1/")
 nitro_kdir="${kFT}-${kTM}-${kFL}"
-echo "[batch] Nitro-SLAM kernel dir: ${nitro_kdir}"
+echo "[batch] $(date +%F\ %T) group=$group root=$RESULTS_ROOT version=$version iters=$num_itr${filter:+ filter=$filter}"
+echo "[batch] ${#datasets[@]} sequences, Nitro-SLAM kernel dir: ${nitro_kdir}"
 
 # Exact comm match: Linux truncates comm to 15 chars, so the process is
 # "stereo_inertial". Matching on the full command line would also match this
@@ -46,14 +91,20 @@ run_timeout() {
     esac
 }
 
-for dataset in "${datasets[@]}"; do
-    for i in $(seq 0 $((num_itr - 1))); do
+for i in $(seq 0 $((num_itr - 1))); do
+    echo "[batch] ===== pass $i / $((num_itr - 1)) ====="
+    for dataset in "${datasets[@]}"; do
         for cfg in "0 0 0" "1 1 1"; do
             set -- $cfg
             if [ "$1" -eq 1 ]; then
-                statsDir="Results/Nitro-SLAM/${nitro_kdir}/${version}/${dataset}/${i}"
+                statsDir="${RESULTS_ROOT}/Nitro-SLAM/${nitro_kdir}/${version}/${dataset}/${i}"
             else
-                statsDir="Results/ORB-SLAM3/${version}/${dataset}/${i}"
+                statsDir="${RESULTS_ROOT}/ORB-SLAM3/${version}/${dataset}/${i}"
+            fi
+
+            if [ -f "${statsDir}/.batch_done" ] && [ "${FORCE:-0}" -eq 0 ]; then
+                echo "[batch] skip (done) iter=$i dataset=$dataset cfg='$cfg'"
+                continue
             fi
             echo "[batch] $(date +%T) iter=$i dataset=$dataset FT=$1 TM=$2 FL=$3"
 
@@ -71,7 +122,11 @@ for dataset in "${datasets[@]}"; do
 
             timeout "$(run_timeout "$dataset")" ./run_script.sh "$dataset" "$1" "$2" "$3" 1 "$version" "$i"
             rc=$?
-            [ $rc -ne 0 ] && echo "[batch] WARNING rc=$rc for $dataset iter=$i cfg='$cfg'"
+            if [ $rc -ne 0 ]; then
+                echo "[batch] WARNING rc=$rc for $dataset iter=$i cfg='$cfg'"
+            else
+                touch "${statsDir}/.batch_done"
+            fi
 
             wait "$mon_pid" 2>/dev/null
             [ -f "${statsDir}/memory_summary.txt" ] \
@@ -81,4 +136,4 @@ for dataset in "${datasets[@]}"; do
         done
     done
 done
-echo "[batch] done $(date +%T)"
+echo "[batch] done $(date +%F\ %T) group=$group"

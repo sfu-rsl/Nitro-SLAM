@@ -293,13 +293,46 @@ became a 50% run-loss rate on magistrale1. Growing beats both overrunning and ab
 
 ### 8. Stack VLAs sized by runtime data
 
-- `FuseKernel.cu:509` — `CudaKeyFrame* neighKFsGPUAddress[neighKFSize];`
-- `StereoMatchKernel.cu:377` — `int vRowIndicesFlat[nRows * 200];` (~400 KB at 512 rows)
-- `StereoMatchKernel.cu:380` — `CudaKeyPoint gpuKeypointsL[N], gpuKeypointsR[Nr];`
+Two groups, and the second is the one that matters.
 
-VLAs are a GNU extension, not standard C++, and these are sized from map/frame data with
-no upper bound. The 400 KB one fits an 8 MB stack but leaves little headroom if these
-nest.
+**Keyframe-sized** — bounded by the covisibility window (tens of keyframes), so small:
+
+- `FuseKernel.cu:581` — `CudaKeyFrame* neighKFsGPUAddress[neighKFSize];`
+- `FuseKernel.cu:608-609` — `Sophus::SE3f Tcw[neighKFSize], TcwRight[neighKFSize];`
+  and `Eigen::Vector3f Ow[neighKFSize], OwRight[neighKFSize];`
+- `StereoMatchKernel.cu:381` — `int vRowIndicesFlat[nRows * 200];` (~400 KB at 512 rows)
+- `StereoMatchKernel.cu:384` — `CudaKeyPoint gpuKeypointsL[N], gpuKeypointsR[Nr];`
+
+**Map-point-sized — unbounded**, and the actual hazard:
+
+- `FuseKernel.cu:319` — `CudaMapPoint wrappedCurrKFMapPoints[currKFMapPoints.size()];`
+- `FuseKernel.cu:593` — same declaration in the multi-keyframe `launch()`
+
+`MAPPING_DATA_WRAPPER::CudaMapPoint` is 88 bytes, so these are `88 * N` where `N` is
+`currKF->GetMapPointMatches().size()` — map data, with no cap and no check. This is the
+same shape of defect as §A and §7: a fixed or unchecked capacity sized against a
+quantity that grows over a sequence and jumps at a loop closure. The difference is that
+§A at least *detected* the overrun; a VLA overrun walks the stack pointer past the guard
+page and dies with SIGSEGV pointing at the declaration rather than at the cause.
+
+Both sites sit immediately after an `ensureCapacity()` call (`FuseKernel.cu:311`, `:575`)
+that grows the matching *device* buffer on demand — so the device side is already handled
+and only the host staging array was missed.
+
+VLAs are a C99 feature and are not in any C++ standard; GCC/nvcc accept them as an
+extension, which is why none of this warns. `-pedantic` would flag every site above.
+
+**Fix:** make the staging buffer a member grown inside `ensureCapacity()` alongside
+`d_currKFMapPoints`, as `SearchAndFuseKernel` already does with its `h_MapPoints` /
+`d_MapPoints` pair. Allocating it pinned rather than with `new` also turns the following
+`cudaMemcpy` into a real DMA, so the safety fix and a transfer speedup come from the same
+change.
+
+Worth fixing together with the per-call repack cost: both `FuseKernel::launch` overloads
+rebuild the entire wrapped array on the host on *every* launch, which is O(N) per call on
+data that mostly has not changed since the last one. A `CudaMapPoint` mirror hanging off
+each `MapPoint`, dirty-flagged on `SetWorldPos` / `ComputeDistinctiveDescriptors`, removes
+the repack and the VLA at once. Same pattern in `SearchAndFuseKernel::launch`.
 
 ### 9. Return codes ignored on many CUDA calls
 
