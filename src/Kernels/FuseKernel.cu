@@ -15,6 +15,7 @@ void FuseKernel::freeBuffers() {
     }
     if (mapPointCapacity != 0) {
         checkCudaError(cudaFree(d_currKFMapPoints),"Failed to free fuse kernel memory: d_currKFMapPoints");
+        checkCudaError(cudaFreeHost(h_currKFMapPoints),"Failed to free fuse kernel memory: h_currKFMapPoints");
         mapPointCapacity = 0;
     }
     if (pairCapacity != 0) {
@@ -67,8 +68,10 @@ void FuseKernel::ensureCapacity(size_t numKFs, size_t numPoints) {
             std::cout << "[FuseKernel:] growing map-point buffer: " << mapPointCapacity
                       << " -> " << n << " (needed " << numPoints << ")" << std::endl;
             checkCudaError(cudaFree(d_currKFMapPoints),"Failed to free fuse kernel memory: d_currKFMapPoints");
+            checkCudaError(cudaFreeHost(h_currKFMapPoints),"Failed to free fuse kernel memory: h_currKFMapPoints");
         }
         checkCudaError(cudaMalloc((void**)&d_currKFMapPoints, n * sizeof(MAPPING_DATA_WRAPPER::CudaMapPoint)), "Failed to allocate memory for d_currKFMapPoints");
+        checkCudaError(cudaMallocHost((void**)&h_currKFMapPoints, n * sizeof(MAPPING_DATA_WRAPPER::CudaMapPoint)), "Failed to allocate memory for h_currKFMapPoints");
         mapPointCapacity = n;
     }
 
@@ -215,15 +218,9 @@ __global__ void fuseKernel(MAPPING_DATA_WRAPPER::CudaMapPoint* currKFMapPoints, 
 
     for (int ix = nMinCellX; ix <= nMaxCellX; ix++) {
         for (int iy = nMinCellY; iy <= nMaxCellY; iy++) {   
-            std::size_t* vCell;
+            const uint16_t* vCell;
             int vCell_size;
-            if (!bRight) {
-                vCell = &neighKF->flatMGrid[ix * neighKF->mnGridRows * KEYPOINTS_PER_CELL + iy * KEYPOINTS_PER_CELL];
-                vCell_size = neighKF->flatMGrid_size[ix * neighKF->mnGridRows + iy];
-            } else {
-                vCell = &neighKF->flatMGridRight[ix * neighKF->mnGridRows * KEYPOINTS_PER_CELL + iy * KEYPOINTS_PER_CELL];
-                vCell_size = neighKF->flatMGridRight_size[ix * neighKF->mnGridRows + iy];
-            }
+            vCell = neighKF->cellPtr(ix, iy, bRight, vCell_size);
 
             for (size_t j=0, jend=vCell_size; j<jend; j++) {
                 size_t temp_idx = vCell[j];
@@ -316,13 +313,12 @@ void FuseKernel::launch(ORB_SLAM3::KeyFrame *neighKF, const vector<ORB_SLAM3::Ma
 
     // TODO: avoid copying the map points for all of the neighbors and do it once only
     int numValidPoints = 0;
-    MAPPING_DATA_WRAPPER::CudaMapPoint wrappedCurrKFMapPoints[currKFMapPoints.size()];
     for (int i = 0; i < currKFMapPoints.size(); i++) {
         ORB_SLAM3::MapPoint* pMP = currKFMapPoints[i];
         if (!pMP || pMP->isBad() || pMP->IsInKeyFrame(neighKF))
             continue;
         validMapPoints.push_back(pMP);
-        wrappedCurrKFMapPoints[numValidPoints] = MAPPING_DATA_WRAPPER::CudaMapPoint(pMP);
+        h_currKFMapPoints[numValidPoints] = MAPPING_DATA_WRAPPER::CudaMapPoint(pMP);
         numValidPoints++;
     }
 
@@ -334,7 +330,7 @@ void FuseKernel::launch(ORB_SLAM3::KeyFrame *neighKF, const vector<ORB_SLAM3::Ma
     std::chrono::steady_clock::time_point startMemcpy = std::chrono::steady_clock::now();
 #endif
 
-    checkCudaError(cudaMemcpy(d_currKFMapPoints, wrappedCurrKFMapPoints, sizeof(MAPPING_DATA_WRAPPER::CudaMapPoint)*numValidPoints, cudaMemcpyHostToDevice), "Failed to copy vector wrappedCurrKFMapPoints from host to device");
+    checkCudaError(cudaMemcpy(d_currKFMapPoints, h_currKFMapPoints, sizeof(MAPPING_DATA_WRAPPER::CudaMapPoint)*numValidPoints, cudaMemcpyHostToDevice), "Failed to copy vector h_currKFMapPoints from host to device");
 
 #ifdef REGISTER_LOCAL_MAPPING_STATS
     std::chrono::steady_clock::time_point endMemcpy = std::chrono::steady_clock::now();
@@ -482,15 +478,9 @@ __global__ void fuseKernelV2(
 
     for (int ix = nMinCellX; ix <= nMaxCellX; ix++) {
         for (int iy = nMinCellY; iy <= nMaxCellY; iy++) {   
-            std::size_t* vCell;
+            const uint16_t* vCell;
             int vCell_size;
-            if (!bRight) {
-                vCell = &neighKF->flatMGrid[ix * neighKF->mnGridRows * KEYPOINTS_PER_CELL + iy * KEYPOINTS_PER_CELL];
-                vCell_size = neighKF->flatMGrid_size[ix * neighKF->mnGridRows + iy];
-            } else {
-                vCell = &neighKF->flatMGridRight[ix * neighKF->mnGridRows * KEYPOINTS_PER_CELL + iy * KEYPOINTS_PER_CELL];
-                vCell_size = neighKF->flatMGridRight_size[ix * neighKF->mnGridRows + iy];
-            }
+            vCell = neighKF->cellPtr(ix, iy, bRight, vCell_size);
 
             for (size_t j=0, jend=vCell_size; j<jend; j++) {
                 size_t temp_idx = vCell[j];
@@ -590,13 +580,12 @@ void FuseKernel::launchV2(std::vector<ORB_SLAM3::KeyFrame*> neighKFs, ORB_SLAM3:
     }
 
     int numValidPoints = 0;
-    MAPPING_DATA_WRAPPER::CudaMapPoint wrappedCurrKFMapPoints[currKFMapPoints.size()];
     for (int i = 0; i < currKFMapPoints.size(); i++) {
         ORB_SLAM3::MapPoint* pMP = currKFMapPoints[i];
         if (!pMP || pMP->isBad())
             continue;
         else {
-            wrappedCurrKFMapPoints[numValidPoints] = MAPPING_DATA_WRAPPER::CudaMapPoint(pMP);
+            h_currKFMapPoints[numValidPoints] = MAPPING_DATA_WRAPPER::CudaMapPoint(pMP);
             validMapPoints.push_back(pMP);
             numValidPoints++;
         }
@@ -623,7 +612,7 @@ void FuseKernel::launchV2(std::vector<ORB_SLAM3::KeyFrame*> neighKFs, ORB_SLAM3:
 #endif
 
     checkCudaError(cudaMemcpy(d_neighKFs, neighKFsGPUAddress, neighKFSize * sizeof(MAPPING_DATA_WRAPPER::CudaKeyFrame*), cudaMemcpyHostToDevice), "Failed to copy vector neighKFsGPUAddress from host to device");
-    checkCudaError(cudaMemcpy(d_currKFMapPoints, wrappedCurrKFMapPoints, numValidPoints * sizeof(MAPPING_DATA_WRAPPER::CudaMapPoint), cudaMemcpyHostToDevice), "Failed to copy vector wrappedCurrKFMapPoints from host to device");
+    checkCudaError(cudaMemcpy(d_currKFMapPoints, h_currKFMapPoints, numValidPoints * sizeof(MAPPING_DATA_WRAPPER::CudaMapPoint), cudaMemcpyHostToDevice), "Failed to copy vector h_currKFMapPoints from host to device");
     checkCudaError(cudaMemcpy(d_Tcw, Tcw, neighKFSize * sizeof(Sophus::SE3f), cudaMemcpyHostToDevice), "Failed to copy vector Tcw from host to device");
     checkCudaError(cudaMemcpy(d_Ow, Ow, neighKFSize * sizeof(Eigen::Vector3f), cudaMemcpyHostToDevice), "Failed to copy vector Ow from host to device");
     if (CudaUtils::cameraIsFisheye) {

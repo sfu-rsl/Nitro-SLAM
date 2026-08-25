@@ -215,11 +215,10 @@ __global__ void searchByProjectionKernel(Eigen::Vector3f Ow, Sophus::SE3f Tcw,
 
     for (int ix = nMinCellX; ix <= nMaxCellX; ix++) {
         for (int iy = nMinCellY; iy <= nMaxCellY; iy++) { 
-            std::size_t* vCell;
+            const uint16_t* vCell;
             int vCell_size;
             
-            vCell = &connectedKF->flatMGrid[ix * connectedKF->mnGridRows * KEYPOINTS_PER_CELL + iy * KEYPOINTS_PER_CELL];
-            vCell_size = connectedKF->flatMGrid_size[ix * connectedKF->mnGridRows + iy];
+            vCell = connectedKF->cellPtr(ix, iy, false, vCell_size);
             
             for (size_t j=0, jend=vCell_size; j<jend; j++) {
                 size_t temp_idx = vCell[j];
@@ -340,11 +339,10 @@ __global__ void searchByProjectionKernel2(Eigen::Vector3f Ow, Sophus::SE3f Tcw,
 
     for (int ix = nMinCellX; ix <= nMaxCellX; ix++) {
         for (int iy = nMinCellY; iy <= nMaxCellY; iy++) { 
-            std::size_t* vCell;
+            const uint16_t* vCell;
             int vCell_size;
             
-            vCell = &connectedKF->flatMGrid[ix * connectedKF->mnGridRows * KEYPOINTS_PER_CELL + iy * KEYPOINTS_PER_CELL];
-            vCell_size = connectedKF->flatMGrid_size[ix * connectedKF->mnGridRows + iy];
+            vCell = connectedKF->cellPtr(ix, iy, false, vCell_size);
             
             for (size_t j=0, jend=vCell_size; j<jend; j++) {
                 size_t temp_idx = vCell[j];
@@ -473,11 +471,10 @@ __global__ void searchByProjectionKernel3(Eigen::Vector3f* Ow, Sophus::SE3f *Tcw
 
     for (int ix = nMinCellX; ix <= nMaxCellX; ix++) {
         for (int iy = nMinCellY; iy <= nMaxCellY; iy++) { 
-            std::size_t* vCell;
+            const uint16_t* vCell;
             int vCell_size;
             
-            vCell = &connectedKF->flatMGrid[ix * connectedKF->mnGridRows * KEYPOINTS_PER_CELL + iy * KEYPOINTS_PER_CELL];
-            vCell_size = connectedKF->flatMGrid_size[ix * connectedKF->mnGridRows + iy];
+            vCell = connectedKF->cellPtr(ix, iy, false, vCell_size);
             
             for (size_t j=0, jend=vCell_size; j<jend; j++) {
                 size_t temp_idx = vCell[j];
@@ -630,11 +627,10 @@ __global__ void mergedSearchByProjectionKernel(Eigen::Vector3f Ow1, Sophus::SE3f
     
     for (int ix = nMinCellX; ix <= nMaxCellX; ix++) {
         for (int iy = nMinCellY; iy <= nMaxCellY; iy++) {
-            std::size_t* vCell;
+            const uint16_t* vCell;
             int vCell_size;
 
-            vCell = &connectedKF->flatMGrid[ix * connectedKF->mnGridRows * KEYPOINTS_PER_CELL + iy * KEYPOINTS_PER_CELL];
-            vCell_size = connectedKF->flatMGrid_size[ix * connectedKF->mnGridRows + iy];
+            vCell = connectedKF->cellPtr(ix, iy, false, vCell_size);
             
             for (size_t j=0, jend=vCell_size; j<jend; j++) {
                 size_t temp_idx = vCell[j];

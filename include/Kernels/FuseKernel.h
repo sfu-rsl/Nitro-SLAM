@@ -43,6 +43,11 @@ class FuseKernel: public KernelInterface {
         bool memory_is_initialized;
         int *d_bestDists, *d_bestIdxs;
         MAPPING_DATA_WRAPPER::CudaKeyFrame **d_neighKFs;
+        // Host staging for the map points, pinned and grown alongside d_currKFMapPoints.
+        // This used to be a stack VLA sized by currKF->GetMapPointMatches().size(), i.e.
+        // by map data with no bound and no check -- 88 bytes per element straight onto the
+        // thread stack. Pinning also makes the following cudaMemcpy a real DMA.
+        MAPPING_DATA_WRAPPER::CudaMapPoint *h_currKFMapPoints;
         MAPPING_DATA_WRAPPER::CudaMapPoint *d_currKFMapPoints;
         Sophus::SE3f *d_Tcw, *d_TcwRight;
         Eigen::Vector3f *d_Ow, *d_OwRight;

@@ -1,3 +1,4 @@
+#include <cstdint>
 #include <cstdlib>
 #include <mutex>
 #include <sstream>
@@ -143,6 +144,13 @@ cudaError_t freeSharedMemory(void* ptr) {
 
 void CudaUtils::loadSetting(int _nFeatures, int _nLevels, bool _isMonocular, float _scaleFactor, int _nCols, int _nRows, bool _cameraIsFisheye){
     nFeatures_with_th = _nFeatures + N_FEATURES_TH;
+    // CudaKeyFrame stores grid entries as uint16_t. Grid entries are feature indices, so
+    // they stay below the frame's feature count -- but that count comes from
+    // ORBextractor.nFeatures in the settings file, so the bound is only as good as the
+    // configuration. Fail at startup rather than let an out-of-range index corrupt the
+    // grid silently.
+    if (nFeatures_with_th > UINT16_MAX)
+        fatalError("CudaUtils::loadSetting: ORBextractor.nFeatures is too large for the uint16_t grid index type");
     nLevels = _nLevels;
     isMonocular = _isMonocular;
     scaleFactor = _scaleFactor;

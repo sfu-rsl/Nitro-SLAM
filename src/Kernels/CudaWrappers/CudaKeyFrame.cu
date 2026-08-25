@@ -11,6 +11,7 @@
 #include <algorithm>
 
 #include <vector>
+#include <sstream>
 
 namespace MAPPING_DATA_WRAPPER
 {
@@ -45,7 +46,15 @@ namespace MAPPING_DATA_WRAPPER
             checkCudaError(cudaMalloc((void**)&mDescriptors, nFeatures * DESCRIPTOR_SIZE * sizeof(uint8_t)), "Frame::failed to allocate memory for mDescriptors");
         }
 
-        featVecCapacity = MAX_FEAT_PER_WORD*MAX_FEAT_VEC_SIZE;
+        // The grid stores one entry per keypoint that landed in a cell, so it is bounded
+        // by the same feature count as the keypoint arrays it indexes into.
+        checkCudaError(cudaMalloc((void**)&gridIndices, nFeatures * sizeof(uint16_t)), "KeyFrame::failed to allocate memory for gridIndices");
+        checkCudaError(cudaMalloc((void**)&gridIndicesRight, nFeatures * sizeof(uint16_t)), "KeyFrame::failed to allocate memory for gridIndicesRight");
+
+        // mFeatVec holds one entry per feature (~N), not MAX_FEAT_PER_WORD per BoW node;
+        // the old guess over-allocated it by ~5x on every keyframe. It grows on demand, so
+        // starting from the real expected size costs nothing when a keyframe exceeds it.
+        featVecCapacity = 2 * nFeatures;
         featStartIdxCapacity = MAX_FEAT_VEC_SIZE;
         checkCudaError(cudaMalloc((void**)&mFeatVec, featVecCapacity*sizeof(unsigned int)), "KeyFrame::failed to allocate memory for mFeatVec");
         checkCudaError(cudaMalloc((void**)&mFeatVecStartIndexes, featStartIdxCapacity*sizeof(int)), "KeyFrame::failed to allocate memory for mFeatVecStartIndexes");
@@ -91,17 +100,6 @@ namespace MAPPING_DATA_WRAPPER
         checkCudaError(cudaMemcpy(mvInvLevelSigma2, KF->mvInvLevelSigma2.data(), mvInvLevelSigma2_size * sizeof(float), cudaMemcpyHostToDevice), "CudaKeyFrame:: Failed to copy mvInvLevelSigma2 to gpu");
         
         mvuRight_size = KF->mvuRight.size();
-        {
-            static bool once = false;
-            if (!once) { once = true;
-                std::cerr << "[SIZES] nFeatures_with_th=" << CudaUtils::nFeatures_with_th
-                          << " N=" << KF->N << " NLeft=" << KF->NLeft
-                          << " mvKeys=" << KF->mvKeys.size()
-                          << " mvKeysRight=" << KF->mvKeysRight.size()
-                          << " mvuRight=" << KF->mvuRight.size()
-                          << " mvKeysUn=" << KF->mvKeysUn.size()
-                          << " mDescriptors.rows=" << KF->mDescriptors.rows << std::endl; }
-        }
         checkCudaError(cudaMemcpy(mvuRight, KF->mvuRight.data(), mvuRight_size * sizeof(float), cudaMemcpyHostToDevice), "CudaKeyFrame:: Failed to copy mvuRight to gpu");
         
         mDescriptor_rows = KF->mDescriptors.rows;
@@ -134,48 +132,18 @@ namespace MAPPING_DATA_WRAPPER
         }
         checkCudaError(cudaMemcpy(mvKeysUn, tmp_mvKeysUn.data(), mvKeysUn_size * sizeof(CudaKeyPoint), cudaMemcpyHostToDevice), "CudaKeyFrame:: Failed to copy mvKeysUn to gpu");
 
-        // flatMGrid/flatMGridRight give each cell a fixed KEYPOINTS_PER_CELL slots, but a
-        // grid cell is an unbounded vector on the CPU side. Copying its full size wrote
-        // over the following cell (and past the array on the last one), and recording the
-        // uncapped count made the kernel read beyond the cell as well -- which is how it
-        // produced right-image indices past NRight that then indexed keyframe arrays out
-        // of bounds. Clamp both the copy and the recorded size.
-        int keypoints_per_cell = CudaUtils::keypointsPerCell;
-        if (keypoints_per_cell > KEYPOINTS_PER_CELL)
-            keypoints_per_cell = KEYPOINTS_PER_CELL;   // never exceed the allocated stride
-        static size_t maxCellSeen = 0, nDropped = 0;
-        for (int i = 0; i < mnGridCols; ++i) {
-            for (int j = 0; j < mnGridRows; ++j) {
-                size_t num_keypoints = KF->getMGrid()[i][j].size();
-                if (num_keypoints > 0) {
-                    if (num_keypoints > maxCellSeen) maxCellSeen = num_keypoints;
-                    if (num_keypoints > (size_t)keypoints_per_cell) { nDropped += num_keypoints - keypoints_per_cell; num_keypoints = keypoints_per_cell; }
-                    std::memcpy(&flatMGrid[(i * mnGridRows + j) * keypoints_per_cell], KF->getMGrid()[i][j].data(), num_keypoints * sizeof(std::size_t));
-                }
-                flatMGrid_size[i * mnGridRows + j] = num_keypoints;
-            }
-        }
+        // Build both grids in CSR form. The previous fixed-stride layout had to clamp
+        // each cell to KEYPOINTS_PER_CELL and silently drop the overflow; a packed layout
+        // has no per-cell bound to exceed, so nothing is dropped and the stride mismatch
+        // between writer and readers is gone with it.
+        //
+        // Note this is an element-wise narrowing conversion, NOT a memcpy: the source
+        // cells are std::vector<size_t>, and copying their bytes into a uint16_t buffer
+        // would interleave indices with zeros and feed out-of-bounds reads into
+        // mvKeysUn[] and mDescriptors[].
+        buildGrid(KF->getMGrid(), gridOffsets, gridIndices, "gridIndices");
+        buildGrid(KF->mGridRight, gridOffsetsRight, gridIndicesRight, "gridIndicesRight");
 
-        if (!KF->mGridRight.empty()) {
-            for (int i = 0; i < mnGridCols; ++i) {
-                for (int j = 0; j < mnGridRows; ++j) {
-                    size_t num_keypoints = KF->mGridRight[i][j].size();
-                    if (num_keypoints > 0) {
-                        if (num_keypoints > maxCellSeen) maxCellSeen = num_keypoints;
-                        if (num_keypoints > (size_t)KEYPOINTS_PER_CELL) { nDropped += num_keypoints - KEYPOINTS_PER_CELL; num_keypoints = KEYPOINTS_PER_CELL; }
-                        std::memcpy(&flatMGridRight[(i * mnGridRows + j) * KEYPOINTS_PER_CELL], KF->mGridRight[i][j].data(), num_keypoints * sizeof(std::size_t));
-                    }
-                    flatMGridRight_size[i * mnGridRows + j] = num_keypoints;
-                }
-            }
-        }
-
-        {
-            static size_t nKF = 0;
-            if ((++nKF % 500) == 0)
-                std::cerr << "[GRIDCAP] keyframes=" << nKF << " maxCellOccupancy=" << maxCellSeen
-                          << " (stride " << KEYPOINTS_PER_CELL << ") droppedEntries=" << nDropped << std::endl;
-        }
         copyGPUCamera(&camera1, KF->mpCamera);
         copyGPUCamera(&camera2, KF->mpCamera2);
     }
@@ -219,6 +187,45 @@ namespace MAPPING_DATA_WRAPPER
         checkCudaError(cudaMemcpy(mFeatVecStartIndexes, tmp_mFeatVecStartIndexes.data(), mFeatCount*sizeof(int), cudaMemcpyHostToDevice), "CudaKeyFrame:: Failed to copy mFeatVecStartIndexes to gpu");
     }
 
+    // Pack one grid into offsets + indices and upload the indices. An empty grid (the
+    // right grid on any non-fisheye camera, where KeyFrame leaves mGridRight unsized)
+    // still has to zero its offsets: slots are recycled without re-running the
+    // constructor, so stale offsets from a previous keyframe would otherwise be read.
+    void CudaKeyFrame::buildGrid(const std::vector<std::vector<std::vector<size_t>>> &grid,
+                                 uint16_t *offsets, uint16_t *deviceIndices, const char *name) {
+        const int nCells = mnGridCols * mnGridRows;
+
+        if (grid.empty()) {
+            std::memset(offsets, 0, (nCells + 1) * sizeof(uint16_t));
+            return;
+        }
+
+        std::vector<uint16_t> staging;
+        staging.reserve(CudaUtils::nFeatures_with_th);
+
+        int total = 0;
+        for (int i = 0; i < mnGridCols; ++i) {
+            for (int j = 0; j < mnGridRows; ++j) {
+                offsets[i * mnGridRows + j] = (uint16_t) total;
+                for (size_t idx : grid[i][j])
+                    staging.push_back((uint16_t) idx);
+                total += (int) grid[i][j].size();
+            }
+        }
+        offsets[nCells] = (uint16_t) total;
+
+        if (total > CudaUtils::nFeatures_with_th) {
+            std::ostringstream out;
+            out << "CudaKeyFrame::buildGrid: " << name << " needs " << total
+                << " entries but is sized " << CudaUtils::nFeatures_with_th;
+            fatalError(out.str().c_str());
+        }
+
+        if (total > 0)
+            checkCudaError(cudaMemcpy(deviceIndices, staging.data(), total * sizeof(uint16_t), cudaMemcpyHostToDevice),
+                           "CudaKeyFrame:: Failed to copy grid indices to gpu");
+    }
+
     void CudaKeyFrame::copyGPUCamera(CudaCamera *out, ORB_SLAM3::GeometricCamera *camera) {
         out->isAvailable = (bool) camera;
         if (!out->isAvailable)
@@ -253,6 +260,8 @@ namespace MAPPING_DATA_WRAPPER
         checkCudaError(cudaFree((void*)mvKeysUn),"Failed to free keyframe memory: mvKeysUn");
         checkCudaError(cudaFree((void*)mFeatVec),"Failed to free keyframe memory: mFeatVec");
         checkCudaError(cudaFree((void*)mFeatVecStartIndexes),"Failed to free keyframe memory: mFeatVecStartIndexes");
+        checkCudaError(cudaFree((void*)gridIndices),"Failed to free keyframe memory: gridIndices");
+        checkCudaError(cudaFree((void*)gridIndicesRight),"Failed to free keyframe memory: gridIndicesRight");
         // Both pointers dangle now; clear the capacities so a reused slot cannot mistake
         // them for live buffers.
         featVecCapacity = 0;

@@ -303,10 +303,16 @@ Two groups, and the second is the one that matters.
 - `StereoMatchKernel.cu:381` — `int vRowIndicesFlat[nRows * 200];` (~400 KB at 512 rows)
 - `StereoMatchKernel.cu:384` — `CudaKeyPoint gpuKeypointsL[N], gpuKeypointsR[Nr];`
 
-**Map-point-sized — unbounded**, and the actual hazard:
+**Map-point-sized — unbounded**, and the actual hazard — **FIXED**:
 
 - `FuseKernel.cu:319` — `CudaMapPoint wrappedCurrKFMapPoints[currKFMapPoints.size()];`
 - `FuseKernel.cu:593` — same declaration in the multi-keyframe `launch()`
+
+Both are now a single pinned member `h_currKFMapPoints`, grown inside the existing
+`ensureCapacity()` next to `d_currKFMapPoints` and released in `freeBuffers()`, on the
+`SearchAndFuseKernel` `h_MapPoints`/`d_MapPoints` model. Pinning also makes the following
+`cudaMemcpy` a real DMA rather than a staged copy. The keyframe-sized VLAs above are
+untouched.
 
 `MAPPING_DATA_WRAPPER::CudaMapPoint` is 88 bytes, so these are `88 * N` where `N` is
 `currKF->GetMapPointMatches().size()` — map data, with no cap and no check. This is the
@@ -433,13 +439,133 @@ capacities so a reused slot cannot mistake freed pointers for live buffers. The 
 scratch VLAs were replaced with `std::vector` sized to the actual node/feature counts,
 which also drops a needless `mFeatCount * 100` over-allocation.
 
-### 16. Grid stride: one runtime constant, one compile-time constant — `CudaKeyFrame.cu:126,136`
+### 16. Grid stride: writers use a runtime constant, readers a compile-time one — FIXED for keyframes
 
-`flatMGrid` is strided by the runtime `CudaUtils::keypointsPerCell`; `flatMGridRight` by the
-compile-time `KEYPOINTS_PER_CELL`. Both are 20 today so the two agree and nothing breaks —
-this is purely latent, and bites the moment `keypointsPerCell` is tuned. Neither loop caps
-`num_keypoints` per cell against the stride either, so a dense cell overruns into the next
-one (same shape as §2).
+Originally filed as an inconsistency between the two grids inside `CudaKeyFrame`. Lining the
+writers up against the readers showed it is broader than that: **every writer strides by the
+runtime `CudaUtils::keypointsPerCell`, every reader by the compile-time `KEYPOINTS_PER_CELL`**,
+and it applies to `CudaFrame` as well.
+
+| | row stride | cell stride |
+|---|---|---|
+| `CudaKeyFrame` write | runtime `mnGridRows` | **runtime `keypointsPerCell`** |
+| `CudaKeyFrame` read (6 sites) | runtime `mnGridRows` | **compile-time `KEYPOINTS_PER_CELL`** |
+| `CudaFrame` write | compile-time | **runtime `keypointsPerCell`** |
+| `CudaFrame` read (4 sites) | compile-time | **compile-time `KEYPOINTS_PER_CELL`** |
+
+Both values are 20 and `CudaUtils::keypointsPerCell` is assigned only at its definition
+(`CudaUtils.cu:17`) — never from config, never written elsewhere — so this is latent, and
+only reachable by editing that line. Neither writer capped `num_keypoints` per cell against
+the stride, so a dense cell would also overrun into the next one (same shape as §2).
+
+**FIXED for `CudaKeyFrame`** by the CSR grid rewrite (see §17): there is no per-cell stride
+left for a writer and reader to disagree about, and no fixed cell capacity to overflow.
+
+**Still live on the `CudaFrame` path**, which that change deliberately left alone —
+`CudaFrame.cu:155` against the four read sites in `SearchLocalPointsKernel.cu` and
+`PoseEstimationKernel.cu`.
+
+### 17. `CudaKeyFrame` grid was ~86% padding — FIXED
+
+Every `KeyFrame` gets a GPU mirror at construction (`KeyFrame.cc:101`), released only at
+`SetBadFlag` (`:704`), so the per-keyframe footprint is multiplied by the whole map. It was
+**1,032,592 bytes of struct** (measured `sizeof`), of which the two grids and their size
+arrays were 1,032,192 — each of the 3072 cells reserving a fixed 20 slots of `std::size_t`.
+
+The `[GRIDCAP]` instrumentation is what sized the fix: `maxCellOccupancy=16..19`
+against stride 20 with `droppedEntries=0`, while the *average* occupancy is ~1002 keypoints
+over 3072 cells = **0.33 per cell**. The stride was ~60x over-provisioned.
+
+**Fix applied:** the grid is now CSR — inline `uint16_t gridOffsets[nCells + 1]` per side,
+with the packed indices in a device buffer sized like the keypoint arrays they index into.
+Kernels read it through one `CudaKeyFrame::cellPtr()` accessor, so the layout is no longer
+spread across the call sites.
+
+`uint16_t` is safe with ~32x headroom: `Frame::AssignFeaturesToGrid` (`Frame.cc:426-440`) only
+stores `i < Nleft`, `i - Nleft < NRight`, or `i < N`, always below the frame's feature count;
+the largest `ORBextractor.nFeatures` in the repo is 2000 and measured `NLeft` is 1002. Since
+that bound is a runtime config value rather than a compile-time one, `CudaUtils::loadSetting`
+now aborts at startup if `nFeatures_with_th` could reach `UINT16_MAX`.
+
+Note the fill is an element-wise narrowing conversion, **not** a `memcpy`: the source cells
+are `std::vector<size_t>`, and copying their bytes into a `uint16_t` buffer would interleave
+indices with zeros and feed out-of-bounds reads into `mvKeysUn[]` and `mDescriptors[]` —
+silent corruption that builds cleanly.
+
+| | before | after |
+|---|---|---|
+| `sizeof(CudaKeyFrame)` (measured) | 1,032,592 B | **12,712 B** (81x) |
+| device buffers (computed) | ~162,800 B | ~135,040 B |
+| **per keyframe** | **~1.14 MB** | **~144 KB (~8x)** |
+
+The device-buffer line moves because the same change trimmed `featVecCapacity`, which started
+at `MAX_FEAT_PER_WORD*MAX_FEAT_VEC_SIZE` = 10,000 uints (40 KB) against a real total-feature
+count of ~2003 — a ~5x over-allocation on every keyframe. It grows on demand since §15, so
+starting from the expected size costs nothing.
+
+Deliberately **not** applied to `CudaFrame`, which keeps the fixed-stride layout (and §16's
+live stride mismatch). Worth revisiting: `CudaFrame` carries the identical ~1 MB of grid
+fields and is `cudaMemcpy`'d whole-struct H2D three times per frame (`PoseEstimationKernel.cu:26`,
+`:30`, `SearchLocalPointsKernel.cu:153`), so it is ~3 MB per frame of almost entirely zeros.
+
+**Measured on the outdoors sequences.** `gpu_peak` here is `gpu_peak_delta_mib`, the same
+field `memory_usage.py:93` reads, so these are directly comparable to the n=5 baselines in
+`memory_usage.csv` (NVML never lists the process PID in this container, so the device-delta
+figure is the only one either side has).
+
+| sequence | GPU peak before | GPU peak after | GPU avg before | GPU avg after |
+|---|---|---|---|---|
+| outdoors5 | 3817.7 +- 156.2 | **1252.1** (3.05x) | 2325.1 +- 74.8 | **984.3** |
+| outdoors6 | 6823.3 +- 95.8 | **1506.1** (4.53x) | 3909.2 +- 40.7 | **1113.1** |
+| outdoors7 | 4387.3 +- 57.3 | **1554.1** (2.82x) | 2658.8 +- 38.4 | **982.1** |
+
+All MiB. The reduction scales with keyframe count, which is what confirms it is the keyframe
+mirror and not something incidental -- net saving per keyframe is 1,047,640 B (struct
+1,019,880 + `featVec` 31,840 - grid indices 4,080):
+
+| sequence | peak KFs | predicted saving | measured | agreement |
+|---|---|---|---|---|
+| outdoors5 | 2636 | 2634 MiB | 2566 MiB | 97% |
+| outdoors6 | 5256 | 5251 MiB | 5317 MiB | 101% |
+| outdoors7 | 3385 | 3382 MiB | 2833 MiB | 84% |
+
+outdoors7 fits loosest, most likely because peak GPU and peak keyframe count do not occur at
+the same instant. These are single runs against n=5 baselines produced by an earlier binary,
+so a small part of each delta could be unrelated -- though the keyframe-count scaling makes
+that unlikely to account for much.
+
+**Loop closing is unaffected**, checked because the loop-closing kernels are among the grid's
+readers. Sums over `LoopClosing/data/loop*.txt`, against `Results-tumvi-old` (n=1 each):
+
+| sequence | detected / closed / rejected | baseline Nitro | baseline ORB-SLAM3 |
+|---|---|---|---|
+| outdoors5 | 1 / **1** / 0 | 7 / 1 / 6 | 2 / 1 / 1 |
+| outdoors6 | 0 / 0 / 0 | 0 / 0 / 0 | 0 / 0 / 0 |
+| outdoors7 | 8 / **1** / 7 | 5 / **0** / 5 | 5 / **0** / 5 |
+
+outdoors6 finds no candidates in any build, so that sequence looks to have no revisit rather
+than a detection failure. Note outdoors7 closed a loop here where neither baseline did -- with
+n=1 that is not established, but it is worth re-checking against §0, which lists a suspected
+outdoors5 loop-detection failure from the gaussian-blur sigma bug.
+
+**Accuracy.** An earlier framing of this entry expected *bit-identical* trajectories on the
+grounds that `droppedEntries=0` means nothing was being truncated. That is wrong: the system is
+non-deterministic run to run, and four baseline MH01 runs of one unmodified binary spanned
+0.0392-0.0473 m. ATE can only be read against that spread, not as an equality check.
+
+| sequence | ATE (m) | reference |
+|---|---|---|
+| MH01 (non-fisheye: `Nleft == -1`, empty `mGridRight`) | 0.0468 | baseline 0.0392-0.0473, n=4 |
+| room3 (fisheye, full-length ground truth) | 0.0088 | HEAD 0.0080-0.0111, n=4 (above) |
+
+Both inside the established bands, with no crashes and no stderr warnings on any of the five
+sequences. `buildGrid`'s capacity check (a permanent `fatalError` guarding the
+`nFeatures_with_th` sizing basis) did not fire on either camera model. The `[SIZES]` and
+`[GRIDCAP]` prints were removed with the stride they measured.
+
+The outdoors ATEs (7.56, 16.85, 1.71 m) have no comparable baseline here, and TUM-VI outdoors
+sequences only have mocap coverage at the start and end, so they are start/end measurements
+rather than whole-trajectory ones -- not a useful regression signal either way.
 
 ## Regression check on the fixes
 
