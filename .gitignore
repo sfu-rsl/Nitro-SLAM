@@ -119,3 +119,5 @@ evaluation/TurboMap
 *.nsys-rep
 
 *settings.local.json
+*.log
+analysis_out/

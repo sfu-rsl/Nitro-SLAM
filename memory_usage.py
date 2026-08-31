@@ -129,7 +129,13 @@ def collect(roots, systems, machine, sequences, kernel=None):
 
 def figure(agg, systems, datasets, out_path):
     """One plot: a CPU bar and a GPU bar per sequence, per system."""
-    fig, ax = plt.subplots(figsize=(0.42 * len(datasets) + 2.0, 4.4))
+    # Rotation buys horizontal room when the axis is crowded and costs legibility
+    # when it is not, so it follows the sequence count -- and the width follows the
+    # rotation: upright labels need room to print their names side by side, tilted
+    # ones can pack tighter. The wide many-sequence figure is unchanged.
+    tilt = len(datasets) > 8
+    fig, ax = plt.subplots(figsize=((0.42 if tilt else 0.95) * len(datasets) + 2.0,
+                                    4.4))
     fig.patch.set_facecolor(SURFACE)
 
     bars = [(system, metric) for system in systems for metric in METRICS]
@@ -157,8 +163,10 @@ def figure(agg, systems, datasets, out_path):
     ax.tick_params(colors=INK_MUTED, labelsize=9, length=0)
     ax.set_ylim(bottom=0)
     ax.set_xticks(range(len(datasets)))
-    ax.set_xticklabels(datasets, fontsize=9, color=INK, rotation=45, ha='right',
-                       rotation_mode='anchor')
+    ax.set_xticklabels(datasets, fontsize=9, color=INK,
+                       rotation=45 if tilt else 0,
+                       ha='right' if tilt else 'center',
+                       rotation_mode='anchor' if tilt else None)
     ax.set_xlim(-0.7, len(datasets) - 0.3)
 
     handles = [plt.Rectangle((0, 0), 1, 1, facecolor=m['color']) for m in METRICS]
@@ -170,8 +178,12 @@ def figure(agg, systems, datasets, out_path):
                     for i, _ in enumerate(systems)]
         labels += list(systems)
     elif systems:
+        # The legend sits in the strip directly above the axes, so the title has
+        # to clear it. On a wide axis a left-aligned title and a centred legend
+        # miss each other by luck; at four sequences the axis is narrow enough
+        # that they collide, so the title is lifted a full row instead.
         ax.set_title(systems[0], color=INK, fontsize=11, loc='left',
-                     fontweight='semibold')
+                     fontweight='semibold', pad=26)
     ax.legend(handles, labels, loc='lower center', bbox_to_anchor=(0.5, 1.005),
               ncol=len(labels), frameon=False, fontsize=9.5, labelcolor=INK_MUTED,
               handlelength=1.1, handleheight=1.1, borderpad=0, columnspacing=1.5,

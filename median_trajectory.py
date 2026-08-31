@@ -15,6 +15,7 @@ on disk, unlike an interpolated value, which is the point of the exercise.
 """
 import argparse
 import csv
+import fnmatch
 import os
 import re
 import shutil
@@ -140,7 +141,7 @@ def column_labels(variants):
             for v, s in zip(variants, systems)}
 
 
-def latex_table(rows, key, bold_best):
+def latex_table(rows, key, bold_best, decimals=3):
     """Render the reported ATEs as a booktabs table: sequences down, systems across."""
     table = {}
     for row in rows:
@@ -158,7 +159,7 @@ def latex_table(rows, key, bold_best):
         # Compare the printed values, not the underlying ones: two runs that
         # both round to 0.038 are a tie in the table, and bolding one of them
         # would claim a difference the reader cannot see.
-        shown = {v: "%.3f" % a for v, a in cols.items()}
+        shown = {v: "%.*f" % (decimals, a) for v, a in cols.items()}
         best = min(shown.values()) if shown else None
         cells = []
         for variant in variants:
@@ -174,6 +175,13 @@ def latex_table(rows, key, bold_best):
     return "\n".join(out)
 
 
+def keep(name, only, exclude):
+    """Apply the --only/--exclude globs to one sequence name."""
+    if only and not any(fnmatch.fnmatch(name, pat) for pat in only):
+        return False
+    return not any(fnmatch.fnmatch(name, pat) for pat in exclude)
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -186,12 +194,22 @@ def main():
     ap.add_argument("--copy", metavar="OUTDIR",
                     help="copy each median run's trajectory/ into "
                          "OUTDIR/<sequence path>/")
+    ap.add_argument("--only", metavar="PATTERN", action="append", default=[],
+                    help="keep only sequences whose name matches this glob "
+                         "(repeatable, e.g. --only 'room*')")
+    ap.add_argument("--exclude", metavar="PATTERN", action="append", default=[],
+                    help="drop sequences whose name matches this glob "
+                         "(repeatable, e.g. --exclude 'outdoors*')")
     ap.add_argument("--agg", default="median",
                     choices=("median", "best", "worst", "mean"),
                     help="how to reduce a sequence's runs to one number: "
                          "median (default), best/worst (min/max ATE), or mean")
     ap.add_argument("--latex", action="store_true",
                     help="print a LaTeX table of the median ATEs (implies --quiet)")
+    ap.add_argument("--decimals", type=int, default=3, metavar="N",
+                    help="decimal places in the LaTeX table (default: 3); "
+                         "use 4 when sub-centimetre sequences would otherwise "
+                         "round into false ties")
     ap.add_argument("--no-bold", action="store_true",
                     help="with --latex, do not bold the best value in each row")
     ap.add_argument("--quiet", action="store_true",
@@ -205,6 +223,14 @@ def main():
     sequences = find_sequences(args.root)
     if not sequences:
         sys.exit("no runs (directories with an ostream.txt) under %s" % args.root)
+
+    # Filter on the sequence name alone, not the whole path, so one --exclude
+    # drops that sequence across every system in the root -- half a comparison
+    # row is worse than no row.
+    sequences = {seq: runs for seq, runs in sequences.items()
+                 if keep(os.path.basename(seq), args.only, args.exclude)}
+    if not sequences:
+        sys.exit("no sequences left after --only/--exclude")
 
     key = "%s_ate_%s" % (args.agg, args.metric)
     rows = []
@@ -250,7 +276,7 @@ def main():
                 shutil.copy2(path, os.path.join(dest, os.path.basename(path)))
 
     if args.latex and rows:
-        print(latex_table(rows, key, not args.no_bold))
+        print(latex_table(rows, key, not args.no_bold, args.decimals))
 
     if args.csv and rows:
         with open(args.csv, "w", newline="") as fh:
