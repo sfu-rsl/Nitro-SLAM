@@ -16,14 +16,25 @@ which is exact rather than sampling-limited. GPU is the device's used memory min
 the baseline taken before the run, because NVML does not report per-process usage
 on these machines -- gpu_proc_mib is empty in every run.
 
+Thirty-nine bars is a wall rather than a figure, so it plots the four sequences in
+SEQUENCES by default, light to heavy; --all-sequences restores the full sweep.
+
+Both platforms are drawn by default, into one directory with the platform in the
+filename -- analysis_out/memory_usage_{desktop,jetson}.png. The GPU reading is not
+the same measurement on the two: the desktop's comes from NVML as a discrete
+device's used memory, the Jetson's from jtop, where the iGPU allocates out of the
+same system RAM the CPU bar is counting.
+
 Usage:
     ./memory_usage.py
-    ./memory_usage.py --out figures --sequences MH01 room1 corridor1
-    ./memory_usage.py --systems Nitro-SLAM ORB-SLAM3
+    ./memory_usage.py --all-sequences
+    ./memory_usage.py --platform jetson --sequences MH01 room1 corridor1
+    ./memory_usage.py --systems Nitro-SLAM ORB-SLAM3 --csv
 """
 
 import argparse
 import csv
+import glob
 import os
 import sys
 
@@ -33,8 +44,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 import seaborn as sns
 
-from tracking_breakdown import (GRID, INK, INK_MUTED, MACHINE, RESULTS_ROOTS, SLOTS,
-                                SURFACE)
+from tracking_breakdown import (GRID, INK, INK_MUTED, OUT_ROOT, PLATFORMS, SLOTS,
+                                SURFACE, out_path, select_platforms)
 from tracking_comparison import BASELINE, CONTENDER, resolve_system
 
 # Colour carries the metric, since that is what the two bars in a group differ by.
@@ -46,9 +57,27 @@ METRICS = [
 ]
 SYSTEM_HATCH = [None, '//']
 
+# One light, one mid, two heavy -- the span the sweep covers, in ascending order of
+# peak memory. Not tracking_breakdown's SEQUENCES: those four are chosen for their
+# timing behaviour and sit almost on top of each other on this axis.
+SEQUENCES = ['MH01', 'corridor1', 'magistrale1', 'outdoors6']
+
+
+def keyframe_count(run_dir):
+    """Keyframes in the saved map, one per line of the kf_*.txt trajectory.
+
+    This is the map after culling, which is what the memory bars are holding -- not
+    the number of keyframes ever created.
+    """
+    found = glob.glob(os.path.join(run_dir, 'trajectory', 'kf_*.txt'))
+    if not found:
+        return None
+    with open(found[0]) as f:
+        return sum(1 for line in f if line.strip())
+
 
 def read_run(run_dir):
-    """{cpu_avg, cpu_peak, gpu_avg, gpu_peak} in MiB for one run, or None.
+    """{cpu_avg, cpu_peak, gpu_avg, gpu_peak, n_kfs} for one run, or None.
 
     Trailing samples where RSS has fallen to zero are the process being unmapped at
     exit rather than real occupancy, so they are dropped before averaging -- same
@@ -91,6 +120,7 @@ def read_run(run_dir):
                                                             float(cpu.max()))),
         gpu_avg=float(gpu.mean()),
         gpu_peak=summary.get('gpu_peak_delta_mib', float(gpu.max()) if gpu.size else 0.0),
+        n_kfs=keyframe_count(run_dir),
     )
 
 
@@ -124,10 +154,15 @@ def collect(roots, systems, machine, sequences, kernel=None):
                         else 0.0)
                     for m in ('cpu_avg', 'cpu_peak', 'gpu_avg', 'gpu_peak')}
                 agg[(system, dataset)]['n_runs'] = len(runs)
+                kfs = [r['n_kfs'] for r in runs if r['n_kfs'] is not None]
+                agg[(system, dataset)]['n_kfs'] = (
+                    (float(np.mean(kfs)),
+                     float(np.std(kfs, ddof=1)) if len(kfs) > 1 else 0.0)
+                    if kfs else None)
     return agg, found
 
 
-def figure(agg, systems, datasets, out_path):
+def figure(agg, systems, datasets, path):
     """One plot: a CPU bar and a GPU bar per sequence, per system."""
     # Rotation buys horizontal room when the axis is crowded and costs legibility
     # when it is not, so it follows the sequence count -- and the width follows the
@@ -162,8 +197,18 @@ def figure(agg, systems, datasets, out_path):
     ax.spines['bottom'].set_color('#d6d5d0')
     ax.tick_params(colors=INK_MUTED, labelsize=9, length=0)
     ax.set_ylim(bottom=0)
+    # The keyframe count rides under the sequence name: memory is dominated by how
+    # much map is resident, so the axis says how big each map got rather than
+    # leaving the reader to infer it from the sequence's reputation. Averaged over
+    # the systems drawn, which agree to a few percent.
+    labels = []
+    for dataset in datasets:
+        kfs = [agg[(s, dataset)]['n_kfs'][0] for s in systems
+               if (s, dataset) in agg and agg[(s, dataset)].get('n_kfs')]
+        labels.append(f'{dataset}\n{np.mean(kfs):,.0f} KF' if kfs else dataset)
+
     ax.set_xticks(range(len(datasets)))
-    ax.set_xticklabels(datasets, fontsize=9, color=INK,
+    ax.set_xticklabels(labels, fontsize=9, color=INK,
                        rotation=45 if tilt else 0,
                        ha='right' if tilt else 'center',
                        rotation_mode='anchor' if tilt else None)
@@ -190,12 +235,13 @@ def figure(agg, systems, datasets, out_path):
               handletextpad=0.6)
 
     fig.tight_layout()
-    fig.savefig(out_path, dpi=300, facecolor=SURFACE, bbox_inches='tight')
+    fig.savefig(path, dpi=300, facecolor=SURFACE, bbox_inches='tight')
     plt.close(fig)
 
 
 def write_csv(path, agg, systems, datasets):
-    rows = ['system,dataset,metric,mean_mib,std_mib,n_runs']
+    """One row per system/sequence/metric. Memory rows are MiB; n_kfs is a count."""
+    rows = ['system,dataset,metric,mean,std,n_runs']
     for dataset in datasets:
         for system in systems:
             e = agg.get((system, dataset))
@@ -205,50 +251,88 @@ def write_csv(path, agg, systems, datasets):
                 mean, std = e[metric]
                 rows.append(f'{system},{dataset},{metric},{mean:.2f},{std:.2f},'
                             f'{e["n_runs"]}')
+            if e.get('n_kfs'):
+                mean, std = e['n_kfs']
+                rows.append(f'{system},{dataset},n_kfs,{mean:.1f},{std:.1f},'
+                            f'{e["n_runs"]}')
     with open(path, 'w') as f:
         f.write('\n'.join(rows) + '\n')
+
+
+def build(args, platform, agg, datasets):
+    """Draw the figure for one platform. Returns the number of figures written."""
+    datasets = [d for d in datasets if any((s, d) in agg for s in args.systems)]
+    if not datasets:
+        print('  no memory data found')
+        return 0
+
+    for dataset in datasets:
+        for system in args.systems:
+            if (system, dataset) not in agg:
+                print(f'  warning: no memory data for {system} on {dataset}')
+    print(f'  {len(datasets)} sequences · {", ".join(args.systems)} · '
+          f'{sum(e["n_runs"] for e in agg.values())} runs')
+
+    os.makedirs(args.out, exist_ok=True)
+    path = out_path(args.out, 'memory_usage.png', platform)
+    figure(agg, args.systems, datasets, path)
+    print(f'  wrote {path}')
+    if args.csv:
+        csv_path = out_path(args.out, 'memory_usage.csv', platform)
+        write_csv(csv_path, agg, args.systems, datasets)
+        print(f'  wrote {csv_path}')
+    return 1
 
 
 def main():
     sns.set_context("paper")
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument('--results', nargs='*', default=RESULTS_ROOTS,
-                    help='results roots to search, in order')
-    ap.add_argument('--sequences', nargs='*',
-                    help='restrict to these sequences; default is every one found')
+    ap.add_argument('--platform', nargs='*', choices=sorted(PLATFORMS),
+                    help='platforms to draw (default: all of them)')
+    ap.add_argument('--results', nargs='*',
+                    help="results roots to search, in order; overrides --platform's")
+    ap.add_argument('--sequences', nargs='*', default=SEQUENCES,
+                    help='sequences to plot, in this order')
+    ap.add_argument('--all-sequences', action='store_true',
+                    help='draw every sequence found instead')
     ap.add_argument('--systems', nargs='*', default=[CONTENDER],
                     help='systems to plot, in this order; more than one adds a legend')
-    ap.add_argument('--machine', default=MACHINE, help='machine directory to read')
+    ap.add_argument('--machine', help="machine directory to read; overrides --platform's")
     ap.add_argument('--nitro-kernel', help='kernel-status directory to read for '
                                            'Nitro-SLAM, when the tree holds several')
-    ap.add_argument('--out', default='.', help='directory for the figure and CSV')
+    ap.add_argument('--out', default=OUT_ROOT, help='directory to write the figure into')
+    ap.add_argument('--csv', action='store_true',
+                    help='also write the per-metric table beside the figure')
     args = ap.parse_args()
 
-    agg, datasets = collect(args.results, args.systems, args.machine,
-                            args.sequences, args.nitro_kernel)
-    if not agg:
-        print('no memory data found')
-        return 1
-    if args.sequences:
-        datasets = [d for d in args.sequences if d in datasets]
-
-    missing = [(s, d) for d in datasets for s in args.systems
-               if (s, d) not in agg]
-    for system, dataset in missing:
-        print(f'  warning: no memory data for {system} on {dataset}')
-    print(f'{len(datasets)} sequences · {", ".join(args.systems)} · '
-          f'{sum(e["n_runs"] for k, e in agg.items())} runs')
-
-    os.makedirs(args.out, exist_ok=True)
     plt.rcParams.update({'font.family': 'DejaVu Sans', 'savefig.facecolor': SURFACE})
-    path = os.path.join(args.out, 'memory_usage.png')
-    figure(agg, args.systems, datasets, path)
-    print(f'  wrote {path}')
-    csv_path = os.path.join(args.out, 'memory_usage.csv')
-    write_csv(csv_path, agg, args.systems, datasets)
-    print(f'  wrote {csv_path}')
-    return 0
+
+    # Read every platform first: the quartile ranking is shared across them, so it
+    # cannot be computed until all of their numbers are in.
+    gathered, found = [], []
+    for name, roots, machine in select_platforms(args):
+        agg, datasets = collect(roots, args.systems, machine,
+                                None if args.all_sequences else args.sequences,
+                                args.nitro_kernel)
+        if not agg:
+            print(f'{name}: no memory data found')
+            continue
+        gathered.append((name, agg))
+        for d in datasets:
+            if d not in found:
+                found.append(d)
+    if not gathered:
+        return 1
+
+    datasets = found if args.all_sequences else \
+        [d for d in args.sequences if d in found]
+
+    written = 0
+    for name, agg in gathered:
+        print(f'{name}:')
+        written += build(args, name, agg, datasets)
+    return 0 if written else 1
 
 
 if __name__ == '__main__':

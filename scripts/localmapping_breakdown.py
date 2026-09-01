@@ -12,9 +12,12 @@ Draws one figure, localmapping_breakdown.png: a bar per sequence, each segment a
 phase's mean time per keyframe averaged over the repeated runs, over the four
 sequences named in SEQUENCES.
 
+Both platforms are drawn by default, into one directory with the platform in the
+filename -- analysis_out/localmapping_breakdown_{desktop,jetson}.png.
+
 Usage:
     ./localmapping_breakdown.py
-    ./localmapping_breakdown.py --out figures --sequences MH01 room1
+    ./localmapping_breakdown.py --platform jetson --sequences MH01 room1
 """
 
 import argparse
@@ -24,8 +27,9 @@ import sys
 import matplotlib.pyplot as plt
 import seaborn as sns
 
-from tracking_breakdown import (MACHINE, RESULTS_ROOTS, SEQUENCES, SURFACE, SYSTEM,
-                                aggregate, figure, find_runs, write_csv)
+from tracking_breakdown import (OUT_ROOT, PLATFORMS, SEQUENCES, SURFACE, SYSTEM,
+                                aggregate, figure, find_runs, out_path,
+                                select_platforms, write_csv)
 
 SUBDIR = ('LocalMapping', 'data')
 
@@ -54,42 +58,27 @@ CHART = dict(
 )
 
 
-def main():
-    sns.set_context("paper")
-    ap = argparse.ArgumentParser(description=__doc__,
-                                 formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument('--results', nargs='*', default=RESULTS_ROOTS,
-                    help='results roots to search, in order')
-    ap.add_argument('--sequences', nargs='*', default=SEQUENCES,
-                    help='sequences to plot, in this order')
-    ap.add_argument('--system', default=SYSTEM, help='system directory to read')
-    ap.add_argument('--machine', default=MACHINE, help='machine directory to read')
-    ap.add_argument('--out', default='.', help='directory for the figure and CSV')
-    ap.add_argument('--allow-missing-series', action='store_true',
-                    help='keep runs whose stats dump is incomplete, counting the '
-                         'absent phases as zero instead of dropping the run')
-    args = ap.parse_args()
-
-    runs, missing = find_runs(args.results, args.sequences, args.system, args.machine,
+def build(args, platform, roots, machine):
+    """Draw the figure for one platform. Returns the number of figures written."""
+    runs, missing = find_runs(roots, args.sequences, args.system, machine,
                               subdir=SUBDIR)
     for d in missing:
-        print(f'  warning: "{d}" not found under any of {", ".join(args.results)}')
+        print(f'  warning: "{d}" not found under any of {", ".join(roots)}')
     if not runs:
-        print(f'no runs found for {args.system}/{args.machine}')
-        return 1
+        print(f'  no runs found for {args.system}/{machine}')
+        return 0
 
     n_expected = max(len({r['iteration'] for r in runs if r['dataset'] == d})
                      for d in {r['dataset'] for r in runs})
-    print(f'{len(runs)} run directories · {args.system} · {args.machine} · '
+    print(f'  {len(runs)} run directories · {args.system} · {machine} · '
           f'{", ".join(args.sequences)}')
     os.makedirs(args.out, exist_ok=True)
-    plt.rcParams.update({'font.family': 'DejaVu Sans', 'savefig.facecolor': SURFACE})
 
     agg, skipped, absent = aggregate(runs, CHART, CHART['phases'],
                                      args.allow_missing_series)
     if not agg:
         print('  no Local Mapping data')
-        return 1
+        return 0
     # Re-runs in flight show up as skipped iterations, not as zeroed bars.
     for dataset, entries in sorted(skipped.items()):
         for iteration, why in entries:
@@ -97,13 +86,47 @@ def main():
     if absent:
         print(f'  series absent in some runs: {", ".join(absent)}')
 
-    path = os.path.join(args.out, CHART['out'])
+    written = 0
+    path = out_path(args.out, CHART['out'], platform)
     if figure(agg, CHART, CHART['phases'], args.sequences, path, n_expected, None):
         print(f'  wrote {path}')
-    csv_path = os.path.join(args.out, 'localmapping_breakdown.csv')
-    write_csv(csv_path, {'localmapping': agg})
-    print(f'  wrote {csv_path}')
-    return 0
+        written = 1
+    if args.csv:
+        csv_path = out_path(args.out, 'localmapping_breakdown.csv', platform)
+        write_csv(csv_path, {'localmapping': agg})
+        print(f'  wrote {csv_path}')
+    return written
+
+
+def main():
+    sns.set_context("paper")
+    ap = argparse.ArgumentParser(description=__doc__,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument('--platform', nargs='*', choices=sorted(PLATFORMS),
+                    help='platforms to draw (default: all of them)')
+    ap.add_argument('--results', nargs='*',
+                    help="results roots to search, in order; overrides --platform's")
+    ap.add_argument('--sequences', nargs='*', default=SEQUENCES,
+                    help='sequences to plot, in this order')
+    ap.add_argument('--system', default=SYSTEM, help='system directory to read')
+    ap.add_argument('--machine', help="machine directory to read; overrides --platform's")
+    ap.add_argument('--out', default=OUT_ROOT, help='directory to write the figure into')
+    ap.add_argument('--csv', action='store_true',
+                    help='also write the per-phase table beside the figure')
+    ap.add_argument('--allow-missing-series', action='store_true',
+                    help='keep runs whose stats dump is incomplete, counting the '
+                         'absent phases as zero instead of dropping the run')
+    args = ap.parse_args()
+
+    plt.rcParams.update({'font.family': 'DejaVu Sans', 'savefig.facecolor': SURFACE})
+
+    # A platform with no results tree is reported and stepped over rather than
+    # failing the run: the two sweeps finish at different times.
+    written = 0
+    for name, roots, machine in select_platforms(args):
+        print(f'{name}:')
+        written += build(args, name, roots, machine)
+    return 0 if written else 1
 
 
 if __name__ == '__main__':

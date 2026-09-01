@@ -19,10 +19,16 @@ Runs whose series are missing or empty are skipped and reported rather than
 counted as zero, so a partially re-run sweep still plots -- the bar is annotated
 with how many runs it actually averaged.
 
+The same sweep is run on both platforms, so both are drawn by default, into one
+directory with the platform in the filename:
+
+    analysis_out/tracking_breakdown_desktop.png
+    analysis_out/tracking_breakdown_jetson.png
+
 Usage:
     ./tracking_breakdown.py
-    ./tracking_breakdown.py --out figures --deep
-    ./tracking_breakdown.py --sequences MH01 V101 room1 corridor1
+    ./tracking_breakdown.py --platform jetson --deep
+    ./tracking_breakdown.py --sequences MH01 V101 room1 corridor1 --csv
 """
 
 import argparse
@@ -41,6 +47,16 @@ RESULTS_ROOTS = ['Results-euroc', 'Results-tumvi']
 SEQUENCES = ['MH01', 'V101', 'room1', 'corridor1']
 SYSTEM = 'ORB-SLAM3'
 MACHINE = 'desktop'
+# The desktop and the Jetson run the same sweep into trees that differ only in
+# their prefix and in the machine directory at the bottom, so a platform is just
+# (roots, machine) and the two are interchangeable everywhere below. Figures are
+# written per platform because the filenames are otherwise identical.
+PLATFORMS = {
+    'desktop': dict(roots=RESULTS_ROOTS, machine=MACHINE, label='Desktop'),
+    'jetson': dict(roots=[os.path.join('data', 'jetson', r) for r in RESULTS_ROOTS],
+                   machine='jetson', label='Orin Nano'),
+}
+OUT_ROOT = 'analysis_out'
 # Which thread's stats directory a chart reads; a spec overrides it with 'subdir'.
 # localmapping_breakdown.py reuses everything below with ('LocalMapping', 'data').
 THREAD_SUBDIR = ('Tracking', 'data')
@@ -58,7 +74,7 @@ SLOTS = ['#2a78d6', '#eb6834', '#1baf7a', '#eda100', '#e87ba4', '#008300', '#4a3
 OTHER_COLOR = '#52514e'
 OTHER_LABEL = 'Other'          # the residual's name in the legend, CSV and lookups
 LEGEND_NCOL = 3                # legend entries per row
-SURFACE = '#fcfcfb'
+SURFACE = '#ffffff'
 INK, INK_MUTED, GRID = '#0b0b0b', '#52514e', '#e2e1dd'
 
 # ── chart definitions ─────────────────────────────────────────────────────────
@@ -421,38 +437,48 @@ def write_csv(path, all_agg):
         f.write('\n'.join(rows) + '\n')
 
 
-def main():
-    sns.set_context("paper")
-    ap = argparse.ArgumentParser(description=__doc__,
-                                 formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument('--results', nargs='*', default=RESULTS_ROOTS,
-                    help='results roots to search, in order')
-    ap.add_argument('--sequences', nargs='*', default=SEQUENCES,
-                    help='sequences to plot, in this order')
-    ap.add_argument('--system', default=SYSTEM, help='system directory to read')
-    ap.add_argument('--machine', default=MACHINE, help='machine directory to read')
-    ap.add_argument('--out', default='.', help='directory for the figures and CSV')
-    ap.add_argument('--allow-missing-series', action='store_true',
-                    help='keep runs whose stats dump is incomplete, counting the '
-                         'absent phases as zero instead of dropping the run')
-    ap.add_argument('--deep', action='store_true',
-                    help='split TrackLocalMap into leaf phases instead of its three parts')
-    args = ap.parse_args()
+def out_path(out_dir, filename, platform):
+    """<out_dir>/<stem>_<platform><ext>.
 
-    runs, missing = find_runs(args.results, args.sequences, args.system, args.machine)
+    The platform goes in the name rather than a directory above it, so a figure and
+    its counterpart sit side by side wherever the set is collected.
+    """
+    stem, ext = os.path.splitext(filename)
+    return os.path.join(out_dir, f'{stem}_{platform}{ext}')
+
+
+def select_platforms(args):
+    """[(name, roots, machine)] to draw, honouring --results/--machine overrides.
+
+    Both platforms are drawn by default. An explicit root or machine describes one
+    tree rather than a family of them, so it is only accepted alongside a single
+    --platform -- otherwise it would silently point both platforms at the same runs.
+    """
+    chosen = args.platform or sorted(PLATFORMS)
+    override = args.results is not None or args.machine is not None
+    if override and len(chosen) > 1:
+        raise SystemExit('--results/--machine describe one tree; name a single '
+                         '--platform alongside them')
+    return [(name, args.results or PLATFORMS[name]['roots'],
+             args.machine or PLATFORMS[name]['machine']) for name in chosen]
+
+
+def build(args, platform, roots, machine):
+    """Draw every chart for one platform. Returns the number of figures written."""
+    runs, missing = find_runs(roots, args.sequences, args.system, machine)
     for d in missing:
-        print(f'  warning: "{d}" not found under any of {", ".join(args.results)}')
+        print(f'  warning: "{d}" not found under any of {", ".join(roots)}')
     if not runs:
-        print(f'no runs found for {args.system}/{args.machine}')
-        return 1
+        print(f'  no runs found for {args.system}/{machine}')
+        return 0
 
     n_expected = max(len({r['iteration'] for r in runs if r['dataset'] == d})
                      for d in {r['dataset'] for r in runs})
-    print(f'{len(runs)} run directories · {args.system} · {args.machine} · '
+    print(f'  {len(runs)} run directories · {args.system} · {machine} · '
           f'{", ".join(args.sequences)}')
     os.makedirs(args.out, exist_ok=True)
-    plt.rcParams.update({'font.family': 'DejaVu Sans', 'savefig.facecolor': SURFACE})
 
+    written = 0
     all_agg = {}
     for chart, spec in CHARTS.items():
         phases = spec['deep_phases'] if (args.deep and 'deep_phases' in spec) \
@@ -468,17 +494,51 @@ def main():
                 print(f'  {chart}: skipped {dataset}/{iteration} -- {why}')
         if absent:
             print(f'  {chart}: series absent in some runs: {", ".join(absent)}')
-        # subtitle = (f'{args.system} on {args.machine} · mean of {n_expected} runs '
-                    # f'per sequence · EuRoC and TUM-VI')
         subtitle = None
-        path = os.path.join(args.out, spec['out'])
+        path = out_path(args.out, spec['out'], platform)
         if figure(agg, spec, phases, args.sequences, path, n_expected, subtitle):
             print(f'  wrote {path}')
+            written += 1
 
-    csv_path = os.path.join(args.out, 'tracking_breakdown.csv')
-    write_csv(csv_path, all_agg)
-    print(f'  wrote {csv_path}')
-    return 0
+    if args.csv:
+        csv_path = out_path(args.out, 'tracking_breakdown.csv', platform)
+        write_csv(csv_path, all_agg)
+        print(f'  wrote {csv_path}')
+    return written
+
+
+def main():
+    sns.set_context("paper")
+    ap = argparse.ArgumentParser(description=__doc__,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument('--platform', nargs='*', choices=sorted(PLATFORMS),
+                    help='platforms to draw (default: all of them)')
+    ap.add_argument('--results', nargs='*',
+                    help='results roots to search, in order; overrides --platform\'s')
+    ap.add_argument('--sequences', nargs='*', default=SEQUENCES,
+                    help='sequences to plot, in this order')
+    ap.add_argument('--system', default=SYSTEM, help='system directory to read')
+    ap.add_argument('--machine', help="machine directory to read; overrides --platform's")
+    ap.add_argument('--out', default=OUT_ROOT,
+                    help='directory to write the figures into')
+    ap.add_argument('--csv', action='store_true',
+                    help='also write the per-phase table beside the figures')
+    ap.add_argument('--allow-missing-series', action='store_true',
+                    help='keep runs whose stats dump is incomplete, counting the '
+                         'absent phases as zero instead of dropping the run')
+    ap.add_argument('--deep', action='store_true',
+                    help='split TrackLocalMap into leaf phases instead of its three parts')
+    args = ap.parse_args()
+
+    plt.rcParams.update({'font.family': 'DejaVu Sans', 'savefig.facecolor': SURFACE})
+
+    # A platform with no results tree is reported and stepped over rather than
+    # failing the run: the two sweeps finish at different times.
+    written = 0
+    for name, roots, machine in select_platforms(args):
+        print(f'{name}:')
+        written += build(args, name, roots, machine)
+    return 0 if written else 1
 
 
 if __name__ == '__main__':

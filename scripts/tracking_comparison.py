@@ -13,10 +13,13 @@ Nitro-SLAM's results carry an extra kernel-status component,
 which is discovered automatically; --nitro-kernel picks one when a tree holds more
 than one.
 
+Both platforms are drawn by default, into one directory with the platform in the
+filename -- analysis_out/tracking_comparison_{desktop,jetson}.png.
+
 Usage:
     ./tracking_comparison.py
-    ./tracking_comparison.py --out figures --sequences MH01 room1
-    ./tracking_comparison.py --nitro-kernel 11111-1111-001111
+    ./tracking_comparison.py --platform jetson --sequences MH01 room1
+    ./tracking_comparison.py --nitro-kernel 11111-1111-001111 --csv
 """
 
 import argparse
@@ -27,10 +30,10 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 
 import tracking_breakdown as tb
-from tracking_breakdown import (INK, INK_MUTED, LEGEND_NCOL, MACHINE, RESULTS_ROOTS,
+from tracking_breakdown import (INK, INK_MUTED, LEGEND_NCOL, OUT_ROOT, PLATFORMS,
                                 SEQUENCES, SURFACE, aggregate, annotate_total,
-                                colors_for, draw_stack, find_runs, header,
-                                style_axes, visible_phases)
+                                colors_for, draw_stack, find_runs, header, out_path,
+                                select_platforms, style_axes, visible_phases)
 
 BASELINE = 'ORB-SLAM3'
 CONTENDER = 'Nitro-SLAM'
@@ -84,8 +87,14 @@ def figure_comparison(agg, spec, phases, datasets, systems, out_path, n_expected
     cmap = colors_for(labels)
 
     # With the system read off the fill, a group need only be as wide as its bars.
-    # fig, ax = plt.subplots(figsize=(1.05 * len(datasets) + 2.6, 4.0))
-    fig, ax = plt.subplots(figsize=(5.0, 4.0))
+    # Below the floor the fixed size wins, so the four-sequence figures are
+    # unchanged; above it the axis grows rather than crushing the groups together.
+    # The other comparisons plot four sequences and are sized for the column at
+    # 5in; loop closing discovers its set and can run to a dozen, where 1.45in per
+    # group is what keeps a "magistrale1" tick and a pair of stacked total
+    # annotations clear of their neighbours.
+    width_in = 5.0 if len(datasets) <= 4 else 1.45 * len(datasets)
+    fig, ax = plt.subplots(figsize=(width_in, 4.0))
     fig.patch.set_facecolor(SURFACE)
     span = max(sum(agg[k]['phases'].values()) for k in keys)
 
@@ -127,40 +136,23 @@ def figure_comparison(agg, spec, phases, datasets, systems, out_path, n_expected
     return True
 
 
-def run(chart, default_sequences, doc):
-    """Argument parsing, aggregation and drawing for one thread's comparison.
-
-    localmapping_comparison.py and loopclosing_comparison.py call this with their
-    own chart spec, so the three comparisons stay identical but for the phases.
-    """
-    sns.set_context("paper")
-    ap = argparse.ArgumentParser(description=doc,
-                                 formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument('--results', nargs='*', default=RESULTS_ROOTS,
-                    help='results roots to search, in order')
-    ap.add_argument('--sequences', nargs='*', default=default_sequences,
-                    help='sequences to plot, in this order')
-    ap.add_argument('--systems', nargs=2, default=[BASELINE, CONTENDER],
-                    metavar=('BASELINE', 'CONTENDER'),
-                    help='the two systems to compare; the speedup is baseline/contender')
-    ap.add_argument('--nitro-kernel', help='kernel-status directory to read for '
-                                           'Nitro-SLAM, when the tree holds several')
-    ap.add_argument('--machine', default=MACHINE, help='machine directory to read')
-    ap.add_argument('--out', default='.', help='directory for the figure and CSV')
-    ap.add_argument('--allow-missing-series', action='store_true',
-                    help='keep runs whose stats dump is incomplete, counting the '
-                         'absent phases as zero instead of dropping the run')
-    args = ap.parse_args()
-
+def build(args, platform, roots, machine, chart, default_sequences):
+    """Draw one platform's comparison. Returns the number of figures written."""
     phases = chart['phases']
-    agg, n_expected = {}, 1
+    resolved = {}
     for system in args.systems:
-        path = resolve_system(args.results, system, args.machine, args.nitro_kernel)
+        path = resolve_system(roots, system, machine, args.nitro_kernel)
         if path is None:
             print(f'  warning: no runs for {system} under '
-                  f'{", ".join(args.results)}/*/{args.machine}')
+                  f'{", ".join(roots)}/*/{machine}')
             continue
-        runs, missing = find_runs(args.results, args.sequences, path, args.machine)
+        resolved[system] = path
+
+    sequences = args.sequences if args.sequences is not None else default_sequences
+
+    agg, n_expected = {}, 1
+    for system, path in resolved.items():
+        runs, missing = find_runs(roots, sequences, path, machine)
         for d in missing:
             print(f'  warning: {system} has no "{d}"')
         if not runs:
@@ -179,28 +171,70 @@ def run(chart, default_sequences, doc):
         agg.update({(system, d): e for d, e in one.items()})
 
     if not agg:
-        print('no data to compare')
-        return 1
+        print('  no data to compare')
+        return 0
 
     os.makedirs(args.out, exist_ok=True)
-    plt.rcParams.update({'font.family': 'DejaVu Sans', 'savefig.facecolor': SURFACE})
-    path = os.path.join(args.out, chart['out'])
-    if figure_comparison(agg, chart, phases, args.sequences, args.systems, path,
+    written = 0
+    path = out_path(args.out, chart['out'], platform)
+    if figure_comparison(agg, chart, phases, sequences, args.systems, path,
                          n_expected):
         print(f'  wrote {path}')
+        written = 1
 
     # One CSV row per system/sequence/phase, tagged so both systems sit in one table.
-    csv_path = os.path.join(args.out, chart['out'].replace('.png', '.csv'))
-    tb.write_csv(csv_path, {s: {d: e for (sys_, d), e in agg.items() if sys_ == s}
-                            for s in args.systems})
-    print(f'  wrote {csv_path}')
+    if args.csv:
+        csv_path = out_path(args.out, chart['out'].replace('.png', '.csv'), platform)
+        tb.write_csv(csv_path, {s: {d: e for (sys_, d), e in agg.items() if sys_ == s}
+                                for s in args.systems})
+        print(f'  wrote {csv_path}')
 
-    for dataset in args.sequences:
+    for dataset in sequences:
         a, b = (args.systems[0], dataset), (args.systems[1], dataset)
         if a in agg and b in agg:
-            ta, tteb = sum(agg[a]['phases'].values()), sum(agg[b]['phases'].values())
-            print(f'  {dataset}: {ta:.2f} ms → {tteb:.2f} ms  ({ta / tteb:.2f}× faster)')
-    return 0
+            ta, tb_ = sum(agg[a]['phases'].values()), sum(agg[b]['phases'].values())
+            print(f'  {dataset}: {ta:.2f} ms → {tb_:.2f} ms  ({ta / tb_:.2f}× faster)')
+    return written
+
+
+def run(chart, default_sequences, doc):
+    """Argument parsing, aggregation and drawing for one thread's comparison.
+
+    localmapping_comparison.py and loopclosing_comparison.py call this with their
+    own chart spec, so the three comparisons stay identical but for the phases.
+    """
+    sns.set_context("paper")
+    ap = argparse.ArgumentParser(description=doc,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument('--platform', nargs='*', choices=sorted(PLATFORMS),
+                    help='platforms to draw (default: all of them)')
+    ap.add_argument('--results', nargs='*',
+                    help="results roots to search, in order; overrides --platform's")
+    ap.add_argument('--sequences', nargs='*',
+                    help='sequences to plot, in this order')
+    ap.add_argument('--systems', nargs=2, default=[BASELINE, CONTENDER],
+                    metavar=('BASELINE', 'CONTENDER'),
+                    help='the two systems to compare; the speedup is baseline/contender')
+    ap.add_argument('--nitro-kernel', help='kernel-status directory to read for '
+                                           'Nitro-SLAM, when the tree holds several')
+    ap.add_argument('--machine', help="machine directory to read; overrides --platform's")
+    ap.add_argument('--out', default=OUT_ROOT, help='directory to write the figure into')
+    ap.add_argument('--csv', action='store_true',
+                    help='also write the per-phase table beside the figure')
+    ap.add_argument('--allow-missing-series', action='store_true',
+                    help='keep runs whose stats dump is incomplete, counting the '
+                         'absent phases as zero instead of dropping the run')
+    args = ap.parse_args()
+
+    plt.rcParams.update({'font.family': 'DejaVu Sans', 'savefig.facecolor': SURFACE})
+
+    # A platform with no results tree is reported and stepped over rather than
+    # failing the run: the two sweeps finish at different times.
+    written = 0
+    for name, roots, machine in select_platforms(args):
+        print(f'{name}:')
+        written += build(args, name, roots, machine, chart, default_sequences)
+    return 0 if written else 1
 
 
 if __name__ == '__main__':
