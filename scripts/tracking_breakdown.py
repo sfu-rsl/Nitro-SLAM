@@ -320,6 +320,38 @@ def draw_stack(ax, x, entry, labels, cmap, width, span, show_values=True,
     return bottom
 
 
+def scale_text(fig, factor):
+    """Multiply every text artist on `fig` by `factor`, after it is laid out.
+
+    Cheaper than threading a size through every fontsize= in the drawing code, and
+    it leaves a figure that does not ask for scaling byte-for-byte unchanged. Safe
+    to run last: the legend grows upward out of the axes, so nothing it displaces
+    lands on the plot.
+    """
+    for ax in fig.axes:
+        items = ([ax.title, ax.xaxis.label, ax.yaxis.label] + list(ax.texts)
+                 + ax.get_xticklabels() + ax.get_yticklabels())
+        legend = ax.get_legend()
+        if legend is not None:
+            items += legend.get_texts()
+        for item in items:
+            item.set_fontsize(item.get_fontsize() * factor)
+    for text in fig.texts:
+        text.set_fontsize(text.get_fontsize() * factor)
+
+
+def error_bar(ax, x, top, entry):
+    """The spread across runs, as a cap on top of the bar.
+
+    Stands in for the printed total where the numbers would crowd: with two bars per
+    group the pair of labels is wider than the group itself.
+    """
+    if entry['total_std'] <= 0:
+        return
+    ax.errorbar(x, top, yerr=entry['total_std'], fmt='none', ecolor=INK_MUTED,
+                elinewidth=1.1, capsize=4.0, capthick=1.1, zorder=5)
+
+
 def annotate_total(ax, x, top, entry, n_expected, show_run_count=True):
     """The bar's total, and -- unless the chart opts out with show_run_count=False --
     how many runs it averaged when that is fewer than the rest of the figure."""

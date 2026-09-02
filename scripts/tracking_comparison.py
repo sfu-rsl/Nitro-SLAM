@@ -24,6 +24,7 @@ Usage:
 
 import argparse
 import os
+import re
 import sys
 
 import matplotlib.pyplot as plt
@@ -32,8 +33,9 @@ import seaborn as sns
 import tracking_breakdown as tb
 from tracking_breakdown import (INK, INK_MUTED, LEGEND_NCOL, OUT_ROOT, PLATFORMS,
                                 SEQUENCES, SURFACE, aggregate, annotate_total,
-                                colors_for, draw_stack, find_runs, header, out_path,
-                                select_platforms, style_axes, visible_phases)
+                                colors_for, draw_stack, error_bar, find_runs, header,
+                                out_path, scale_text, select_platforms, style_axes,
+                                visible_phases)
 
 BASELINE = 'ORB-SLAM3'
 CONTENDER = 'Nitro-SLAM'
@@ -42,6 +44,65 @@ CONTENDER = 'Nitro-SLAM'
 # were what forced the groups apart.
 HATCH = {BASELINE: None, CONTENDER: '//'}
 CHART = dict(tb.CHARTS['tracking'], out='tracking_comparison.png')
+
+# --group pools sequences of one kind into a single pair of bars. Sequences within a
+# family differ in length and route but not in what the thread is doing, so five
+# Machine Hall bars mostly restate each other; one bar over all of their runs says
+# the same thing with the spread that comes with it. Matched by prefix, longest
+# first, and in this order on the axis. EuRoC's two Vicon rooms are kept apart
+# because V1 and V2 are different rooms, not two runs of one.
+GROUPS = [
+    ('MH', 'Machine Hall'),
+    ('V1', 'Vicon 1'),
+    ('V2', 'Vicon 2'),
+    ('room', 'Room'),
+    ('corridor', 'Corridor'),
+    ('magistrale', 'Magistrale'),
+    ('outdoors', 'Outdoors'),
+    ('slides', 'Slides'),
+]
+GROUP_ORDER = [label for _, label in GROUPS]
+
+
+def group_of(dataset):
+    """The family label for a sequence, or None when it belongs to none of them."""
+    for prefix, label in GROUPS:
+        if dataset.startswith(prefix):
+            return label
+    return None
+
+
+def all_sequences(roots, frag, machine):
+    """Every sequence under one system, in results-root order.
+
+    Grouping is only meaningful over a whole family, so it discovers the sequences
+    rather than using the handful the per-sequence figures name.
+    """
+    seqs = []
+    for root in roots:
+        base = os.path.join(root, frag, machine)
+        if not os.path.isdir(base):
+            continue
+        seqs += [d for d in sorted(os.listdir(base))
+                 if os.path.isdir(os.path.join(base, d)) and d not in seqs]
+    return seqs
+
+
+def regroup(runs):
+    """Relabel each run's dataset with its family, dropping any that has none.
+
+    Rewriting the label is all the pooling needs: aggregate() groups by it, so a
+    family's bar is the mean over every run of every sequence in it, and its spread
+    is across those runs rather than within one sequence.
+    """
+    kept, unmatched = [], set()
+    for run_ in runs:
+        label = group_of(run_['dataset'])
+        if label is None:
+            unmatched.add(run_['dataset'])
+            continue
+        kept.append(dict(run_, dataset=label))
+    return kept, sorted(unmatched)
 
 
 def resolve_system(roots, system, machine, kernel=None):
@@ -70,6 +131,20 @@ def resolve_system(roots, system, machine, kernel=None):
               f'pick one with --nitro-kernel')
         return None
     return found.pop() if found else None
+
+
+def abbreviate(label, limit):
+    """`label` cut to `limit` characters, keeping whatever index it ends in.
+
+    Sequence names differ only in their trailing digits -- magistrale1 against
+    magistrale2 -- so cutting the tail would collapse two bars into one label. The
+    digits are kept and the name in front of them is shortened, with an ellipsis
+    marking the cut. Only what is drawn changes; the CSV keeps the full names.
+    """
+    if len(label) <= limit:
+        return label
+    head, tail = re.match(r'^(.*?)(\d*)$', label).groups()
+    return f'{head[:max(1, limit - len(tail) - 1)]}\u2026{tail}'
 
 
 def figure_comparison(agg, spec, phases, datasets, systems, out_path, n_expected):
@@ -109,8 +184,11 @@ def figure_comparison(agg, spec, phases, datasets, systems, out_path, n_expected
             # use; the totals carry the comparison and the CSV carries the rest.
             top = draw_stack(ax, x, entry, labels, cmap, width, span,
                              show_values=False, hatch=HATCH.get(system))
-            annotate_total(ax, x, top, entry, n_expected,
-                           spec.get('show_run_count', True))
+            if spec.get('error_bars'):
+                error_bar(ax, x, top, entry)
+            else:
+                annotate_total(ax, x, top, entry, n_expected,
+                               spec.get('show_run_count', True))
         # Speedup callout, only where both systems ran the sequence.
         if len(present) == 2:
             base = sum(agg[(present[0], dataset)]['phases'].values())
@@ -121,8 +199,10 @@ def figure_comparison(agg, spec, phases, datasets, systems, out_path, n_expected
                         fontweight='semibold')
 
     ax.set_xticks([])
+    limit = spec.get('label_chars')
     for gi, dataset in enumerate(datasets):
-        ax.text(gi, -0.03, dataset, transform=ax.get_xaxis_transform(),
+        ax.text(gi, -0.03, abbreviate(dataset, limit) if limit else dataset,
+                transform=ax.get_xaxis_transform(),
                 ha='center', va='top', fontsize=11, color=INK)
     ax.set_xlim(-0.65, len(datasets) - 0.35)
     style_axes(ax, spec)
@@ -130,6 +210,8 @@ def figure_comparison(agg, spec, phases, datasets, systems, out_path, n_expected
     key = [(plt.Rectangle((0, 0), 1, 1, facecolor='#b8b7b3', hatch=HATCH.get(s),
                           edgecolor=SURFACE), s) for s in systems]
     header(fig, ax, labels, cmap, spec, None, extra=key)
+    if spec.get('font_scale', 1.0) != 1.0:
+        scale_text(fig, spec['font_scale'])
 
     fig.savefig(out_path, dpi=800, facecolor=SURFACE, bbox_inches='tight')
     plt.close(fig)
@@ -139,6 +221,24 @@ def figure_comparison(agg, spec, phases, datasets, systems, out_path, n_expected
 def build(args, platform, roots, machine, chart, default_sequences):
     """Draw one platform's comparison. Returns the number of figures written."""
     phases = chart['phases']
+    if args.group or args.nseq:
+        # Families are different sizes -- eight Outdoors sequences against three
+        # Vicon 1 -- so "25/40 runs" would read as missing data rather than as how
+        # many sequences the family has. The counts go to stdout instead. The spread
+        # becomes an error bar rather than a printed total: pooling a family widens
+        # it enough to be worth drawing, and eight groups leave no room for the
+        # labels.
+        #
+        # --nseq gets exactly the same treatment over a named set of sequences, so
+        # it comes out at the size and weight the grouped figures do; with the run
+        # counts off the figure they matter more there, since a named sequence can
+        # rest on a single closure where a pooled family never does.
+        chart = dict(chart, show_run_count=False, error_bars=True, font_scale=1.5)
+    if args.nseq:
+        # A sequence name is longer than a family name, and at this type size
+        # "magistrale1" and "magistrale2" run into each other at the width eight
+        # groups get. Nine characters is what fits, and leaves "outdoors5" alone.
+        chart = dict(chart, label_chars=9)
     resolved = {}
     for system in args.systems:
         path = resolve_system(roots, system, machine, args.nitro_kernel)
@@ -149,16 +249,28 @@ def build(args, platform, roots, machine, chart, default_sequences):
         resolved[system] = path
 
     sequences = args.sequences if args.sequences is not None else default_sequences
+    if args.nseq and args.sequences is None:
+        sequences = chart.get('nseq_sequences', default_sequences)
+    if args.group and args.sequences is None:
+        sequences = []
+        for frag in resolved.values():
+            for name in all_sequences(roots, frag, machine):
+                if name not in sequences:
+                    sequences.append(name)
 
     agg, n_expected = {}, 1
     for system, path in resolved.items():
         runs, missing = find_runs(roots, sequences, path, machine)
         for d in missing:
             print(f'  warning: {system} has no "{d}"')
+        if args.group:
+            runs, unmatched = regroup(runs)
+            if unmatched:
+                print(f'    warning: no group for {", ".join(unmatched)}; dropped')
         if not runs:
             continue
         n_expected = max(n_expected,
-                         max(len({r['iteration'] for r in runs if r['dataset'] == d})
+                         max(len([r for r in runs if r['dataset'] == d])
                              for d in {r['dataset'] for r in runs}))
         one, skipped, absent = aggregate(runs, chart, phases,
                                          args.allow_missing_series)
@@ -174,26 +286,36 @@ def build(args, platform, roots, machine, chart, default_sequences):
         print('  no data to compare')
         return 0
 
+    # Grouped, the axis is the families that turned up rather than the sequences,
+    # and the figure gets its own name so it does not overwrite the per-sequence one.
+    columns = ([g for g in GROUP_ORDER if any((s, g) in agg for s in args.systems)]
+               if args.group else sequences)
+    suffix = '_grouped' if args.group else '_nseq' if args.nseq else ''
+    name = chart['out'].replace('.png', f'{suffix}.png')
+
     os.makedirs(args.out, exist_ok=True)
     written = 0
-    path = out_path(args.out, chart['out'], platform)
-    if figure_comparison(agg, chart, phases, sequences, args.systems, path,
+    path = out_path(args.out, name, platform)
+    if figure_comparison(agg, chart, phases, columns, args.systems, path,
                          n_expected):
         print(f'  wrote {path}')
         written = 1
 
     # One CSV row per system/sequence/phase, tagged so both systems sit in one table.
     if args.csv:
-        csv_path = out_path(args.out, chart['out'].replace('.png', '.csv'), platform)
+        csv_path = out_path(args.out, name.replace('.png', '.csv'), platform)
         tb.write_csv(csv_path, {s: {d: e for (sys_, d), e in agg.items() if sys_ == s}
                                 for s in args.systems})
         print(f'  wrote {csv_path}')
 
-    for dataset in sequences:
+    for dataset in columns:
         a, b = (args.systems[0], dataset), (args.systems[1], dataset)
         if a in agg and b in agg:
             ta, tb_ = sum(agg[a]['phases'].values()), sum(agg[b]['phases'].values())
-            print(f'  {dataset}: {ta:.2f} ms → {tb_:.2f} ms  ({ta / tb_:.2f}× faster)')
+            runs = (f"  over {agg[a]['n_runs']}/{agg[b]['n_runs']} runs"
+                    if args.group or args.nseq else '')
+            print(f'  {dataset}: {ta:.2f} ms → {tb_:.2f} ms  '
+                  f'({ta / tb_:.2f}× faster){runs}')
     return written
 
 
@@ -212,6 +334,13 @@ def run(chart, default_sequences, doc):
                     help="results roots to search, in order; overrides --platform's")
     ap.add_argument('--sequences', nargs='*',
                     help='sequences to plot, in this order')
+    ap.add_argument('--nseq', action='store_true',
+                    help="the chart's named sequence set, drawn the way --group "
+                         'draws families: error bars, larger type, no run counts')
+    ap.add_argument('--group', action='store_true',
+                    help='pool sequences into one pair of bars per family '
+                         '(Machine Hall, Vicon 1, Room, ...) over every sequence '
+                         'found, instead of one pair per sequence')
     ap.add_argument('--systems', nargs=2, default=[BASELINE, CONTENDER],
                     metavar=('BASELINE', 'CONTENDER'),
                     help='the two systems to compare; the speedup is baseline/contender')

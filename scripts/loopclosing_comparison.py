@@ -20,10 +20,12 @@ Usage:
 
 import sys
 
-from loopclosing_breakdown import CHART as BREAKDOWN, CLOSING_SEQUENCES
+from loopclosing_breakdown import (CHART as BREAKDOWN, CLOSING_SEQUENCES,
+                                  NSEQ_SEQUENCES)
 from tracking_comparison import run
 
-CHART = dict(BREAKDOWN, out='loopclosing_comparison.png')
+CHART = dict(BREAKDOWN, out='loopclosing_comparison.png',
+             nseq_sequences=NSEQ_SEQUENCES)
 
 
 if __name__ == '__main__':

@@ -42,6 +42,14 @@ SUBDIR = ('LoopClosing', 'data')
 # less data than the other three -- the run counts are printed on stdout.
 CLOSING_SEQUENCES = ['room3', 'magistrale1', 'outdoors5', 'outdoors7']
 
+# Every sequence on which both systems closed a loop on both the desktop and the
+# Jetson -- the whole set for which a CPU and a GPU number exist side by side. Nine
+# qualify on each platform and they agree on these eight: the desktop also has V103
+# and the Jetson V201, so neither can appear in a figure meant to read the same on
+# both. EuRoC first, then TUM-VI.
+NSEQ_SEQUENCES = ['V102', 'V202', 'V203', 'room3',
+                  'magistrale1', 'magistrale2', 'outdoors5', 'outdoors7']
+
 # (label, [series filenames]) in the order the thread runs them, which is also the
 # order the palette assigns hues -- see the note on SLOTS in tracking_breakdown.py.
 # Loop fusion and graph optimization are the two halves of loopCorrection, so the
