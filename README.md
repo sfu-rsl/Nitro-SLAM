@@ -4,6 +4,10 @@ A unified, high-performance Visual-Inertial SLAM framework that integrates GPU p
 
 This repository consolidates the optimization capabilities of four accelerated SLAM projects from SFU RSL (Reliable Systems Lab) to maximize tracking throughput, minimize latency, and improve global consistency across resource-constrained and high-throughput environments.
 
+
+> [!WARNING]
+> Nitro-SLAM is still under heavy development, meaning it may have several bugs or performance issues. The implementation may change over time.
+
 ---
 
 ## 🚀 Integrated Frameworks, Attributions & Papers
