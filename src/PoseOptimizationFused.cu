@@ -954,8 +954,12 @@ template <typename Camera> struct FusedContext {
         }
     }
 
-    void ensure_factors(size_t n) {
-        if (n <= capacity) return;
+    // Grows geometrically and reallocates every buffer together, so the factor
+    // count is bounded only by what the device can allocate. Returns false if
+    // it cannot, which the callers treat as "fall back to the CPU solver"
+    // rather than dereferencing a null pointer.
+    bool ensure_factors(size_t n) {
+        if (n <= capacity) return true;
         size_t cap = capacity ? capacity : 512;
         while (cap < n) cap *= 2;
         if (h_factors) {
@@ -964,24 +968,43 @@ template <typename Camera> struct FusedContext {
             cudaFree(d_factors);
             cudaFree(d_outlier);
             cudaFree(d_active);
+            h_factors = nullptr;
+            h_outlier = nullptr;
+            d_factors = nullptr;
+            d_outlier = nullptr;
+            d_active = nullptr;
+            capacity = 0;
         }
-        cudaMallocHost(&h_factors, cap * sizeof(VisualFactor));
-        cudaMallocHost(&h_outlier, cap);
-        cudaMalloc(&d_factors, cap * sizeof(VisualFactor));
-        cudaMalloc(&d_outlier, cap);
-        cudaMalloc(&d_active, cap);
+        bool ok = cudaMallocHost(&h_factors, cap * sizeof(VisualFactor)) == cudaSuccess;
+        ok = ok && cudaMallocHost(&h_outlier, cap) == cudaSuccess;
+        ok = ok && cudaMalloc(&d_factors, cap * sizeof(VisualFactor)) == cudaSuccess;
+        ok = ok && cudaMalloc(&d_outlier, cap) == cudaSuccess;
+        ok = ok && cudaMalloc(&d_active, cap) == cudaSuccess;
+        if (!ok) {
+            cudaGetLastError(); // clear the sticky error before returning
+            return false;
+        }
         capacity = cap;
+        return true;
     }
 
-    void ensure_misc(size_t bytes) {
-        if (bytes <= misc_size) return;
+    bool ensure_misc(size_t bytes) {
+        if (bytes <= misc_size) return true;
         if (h_misc) {
             cudaFreeHost(h_misc);
             cudaFree(d_misc);
+            h_misc = nullptr;
+            d_misc = nullptr;
+            misc_size = 0;
         }
-        cudaMallocHost(&h_misc, bytes);
-        cudaMalloc(&d_misc, bytes);
+        bool ok = cudaMallocHost(&h_misc, bytes) == cudaSuccess;
+        ok = ok && cudaMalloc(&d_misc, bytes) == cudaSuccess;
+        if (!ok) {
+            cudaGetLastError();
+            return false;
+        }
         misc_size = bytes;
+        return true;
     }
 };
 
@@ -1028,7 +1051,9 @@ static int PoseOptimizationFusedInternal(Frame *pFrame) {
     ctx.ensure_stream();
 
     const int N = pFrame->N;
-    ctx.ensure_factors(static_cast<size_t>(N > 0 ? N : 1));
+    if (!ctx.ensure_factors(static_cast<size_t>(N > 0 ? N : 1))) {
+        return Optimizer::PoseOptimization(pFrame);
+    }
 
     std::vector<int> &frame_idx = ctx.frame_idx;
     frame_idx.clear();
@@ -1082,7 +1107,9 @@ static int PoseOptimizationFusedInternal(Frame *pFrame) {
     const size_t off_cams = align_up(sizeof(Pose));
     const size_t off_nbad = off_cams + align_up(max_cameras * sizeof(Camera));
     const size_t misc_bytes = off_nbad + align_up(sizeof(int));
-    ctx.ensure_misc(misc_bytes);
+    if (!ctx.ensure_misc(misc_bytes)) {
+        return Optimizer::PoseOptimization(pFrame);
+    }
 
     char *hb = static_cast<char *>(ctx.h_misc);
     char *db = static_cast<char *>(ctx.d_misc);
@@ -1297,7 +1324,9 @@ static int PoseInertialOptimizationLastKeyFrameFusedInternal(Frame *pFrame,
     ctx.ensure_stream();
 
     KeyFrame *pKF = pFrame->mpLastKeyFrame;
-    ctx.ensure_factors(static_cast<size_t>(pFrame->N > 0 ? pFrame->N : 1));
+    if (!ctx.ensure_factors(static_cast<size_t>(pFrame->N > 0 ? pFrame->N : 1))) {
+        return Optimizer::PoseInertialOptimizationLastKeyFrame(pFrame, bRecInit);
+    }
 
     std::vector<int> &frame_idx = ctx.frame_idx;
     int nMono = 0, nStereo = 0;
@@ -1316,7 +1345,9 @@ static int PoseInertialOptimizationLastKeyFrameFusedInternal(Frame *pFrame,
     const size_t off_chi2s = off;   off += align_up(4 * sizeof(FT));
     const size_t off_counts = off;  off += align_up(3 * sizeof(int));
     const size_t misc_bytes = off;
-    ctx.ensure_misc(misc_bytes);
+    if (!ctx.ensure_misc(misc_bytes)) {
+        return Optimizer::PoseInertialOptimizationLastKeyFrame(pFrame, bRecInit);
+    }
 
     char *hb = static_cast<char *>(ctx.h_misc);
     char *db = static_cast<char *>(ctx.d_misc);
@@ -1482,7 +1513,9 @@ static int PoseInertialOptimizationLastFrameFusedInternal(Frame *pFrame, bool bR
 
     FusedContext<Camera> &ctx = context<Camera>();
     ctx.ensure_stream();
-    ctx.ensure_factors(static_cast<size_t>(pFrame->N > 0 ? pFrame->N : 1));
+    if (!ctx.ensure_factors(static_cast<size_t>(pFrame->N > 0 ? pFrame->N : 1))) {
+        return Optimizer::PoseInertialOptimizationLastFrame(pFrame, bRecInit);
+    }
 
     std::vector<int> &frame_idx = ctx.frame_idx;
     int nMono = 0, nStereo = 0;
@@ -1502,7 +1535,9 @@ static int PoseInertialOptimizationLastFrameFusedInternal(Frame *pFrame, bool bR
     const size_t off_chi2s = off;   off += align_up(4 * sizeof(FT));
     const size_t off_counts = off;  off += align_up(3 * sizeof(int));
     const size_t misc_bytes = off;
-    ctx.ensure_misc(misc_bytes);
+    if (!ctx.ensure_misc(misc_bytes)) {
+        return Optimizer::PoseInertialOptimizationLastFrame(pFrame, bRecInit);
+    }
 
     char *hb = static_cast<char *>(ctx.h_misc);
     char *db = static_cast<char *>(ctx.d_misc);

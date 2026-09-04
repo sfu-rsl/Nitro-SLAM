@@ -118,12 +118,8 @@ public:
 };
 
 namespace OptimizerGPU {
-    int PoseOptimization(Frame *pFrame);
-    int PoseInertialOptimizationLastKeyFrame(Frame *pFrame, bool bRecInit = false);
-    int PoseInertialOptimizationLastFrame(Frame *pFrame, bool bRecInit = false);
-
-    // Single-kernel variants: the whole Levenberg-Marquardt loop, including the
-    // outlier-rejection rounds, runs in one block of one kernel launch. See
+    // Tracking pose optimization: the whole Levenberg-Marquardt loop, including
+    // the outlier-rejection rounds, runs in one block of one kernel launch. See
     // src/PoseOptimizationFused.cu.
     int PoseOptimizationFused(Frame *pFrame);
     int PoseInertialOptimizationLastKeyFrameFused(Frame *pFrame, bool bRecInit = false);

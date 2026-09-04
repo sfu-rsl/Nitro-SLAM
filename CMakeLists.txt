@@ -156,7 +156,6 @@ src/Optimizer.cu
 src/LocalBA.cu
 src/LIBA.cu
 src/FIBA.cu
-src/PoseOptimization.cu
 src/PoseOptimizationFused.cu
 src/PoseOptTiming.cc
 src/Frame.cc
