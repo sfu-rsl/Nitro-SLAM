@@ -74,7 +74,7 @@ for job in "$@"; do
 
     # Start the sampler first so it captures a GPU baseline before the process creates
     # its CUDA context.
-    ./monitor_memory.py --out "${statsDir}/memory.csv" \
+    ./scripts/monitor_memory.py --out "${statsDir}/memory.csv" \
                         --summary "${statsDir}/memory_summary.txt" \
                         --interval "$interval" --wait 120 \
                         > "${statsDir}/monitor.log" 2>&1 &

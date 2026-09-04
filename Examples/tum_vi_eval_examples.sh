@@ -30,7 +30,7 @@ echo "------------------------------------"
 echo "Evaluation of ${dataset_name} trajectory with Stereo-Inertial sensor"
 python3 -W ignore ../evaluation/evaluate3.py "$pathDatasetTUM_VI"/dataset-${dataset_name}_512_16//mav0/mocap0/data.csv f_${file_name}.txt --plot ${dataset_name}_512_stereoi.pdf --verbose
 echo "Plotting data"
-python3 ../plot.py "${statsDir}"
+python3 ../scripts/plot.py "${statsDir}"
 
 files=("f_dataset-${dataset_name}_stereoi.csv"
 "f_dataset-${dataset_name}_stereoi.txt"
