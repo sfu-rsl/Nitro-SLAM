@@ -242,7 +242,7 @@ void LocalMapping::Run()
                         // Mark as finished
                         b_doneLBA = true;
                         auto tl1 = std::chrono::steady_clock::now();
-                        std::cout << "LIBA took " << std::chrono::duration_cast<std::chrono::duration<double,std::milli> >(tl1 - tl0).count() << " ms" << std::endl;
+                        // std::cout << "LIBA took " << std::chrono::duration_cast<std::chrono::duration<double,std::milli> >(tl1 - tl0).count() << " ms" << std::endl;
                     }
                     else
                     {
