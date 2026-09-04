@@ -98,6 +98,17 @@ public:
     // Marginalized elements are filled with zeros.
     static Eigen::MatrixXd Marginalize(const Eigen::MatrixXd &H, const int &start, const int &end);
 
+    // Marginalize the leading 15x15 block out of a 30x30 Hessian, as
+    // PoseInertialOptimizationLastFrame does when it builds the next frame's
+    // prior, and write back the remaining 15x15 block.
+    //
+    // Plain arrays (row major) rather than Eigen types on purpose: CUDA
+    // translation units are compiled without the -march=native that the C++
+    // ones get, so Eigen's alignment and allocator differ between them and a
+    // heap-allocating Eigen object must not cross the boundary. The GPU pose
+    // optimizers call this instead of Marginalize() for that reason.
+    static void MarginalizeFrameHessian(const double *H30, double *H15);
+
     // Inertial pose-graph
     void static InertialOptimization(Map *pMap, Eigen::Matrix3d &Rwg, double &scale, Eigen::Vector3d &bg, Eigen::Vector3d &ba, bool bMono, Eigen::MatrixXd  &covInertial, bool bFixedVel=false, bool bGauss=false, float priorG = 1e2, float priorA = 1e6);
     void static InertialOptimization(Map *pMap, Eigen::Vector3d &bg, Eigen::Vector3d &ba, float priorG = 1e2, float priorA = 1e6);
@@ -110,6 +121,13 @@ namespace OptimizerGPU {
     int PoseOptimization(Frame *pFrame);
     int PoseInertialOptimizationLastKeyFrame(Frame *pFrame, bool bRecInit = false);
     int PoseInertialOptimizationLastFrame(Frame *pFrame, bool bRecInit = false);
+
+    // Single-kernel variants: the whole Levenberg-Marquardt loop, including the
+    // outlier-rejection rounds, runs in one block of one kernel launch. See
+    // src/PoseOptimizationFused.cu.
+    int PoseOptimizationFused(Frame *pFrame);
+    int PoseInertialOptimizationLastKeyFrameFused(Frame *pFrame, bool bRecInit = false);
+    int PoseInertialOptimizationLastFrameFused(Frame *pFrame, bool bRecInit = false);
     void LocalInertialBA(KeyFrame* pKF, bool *pbStopFlag, Map *pMap, int& num_fixedKF, int& num_OptKF, int& num_MPs, int& num_edges, bool bLarge = false, bool bRecInit = false);
     // Same as LocalInertialBA, but built on top of the persistent optimizer in LIBAInterface.h
     // so that the allocations are reused between calls.

@@ -68,6 +68,11 @@ int main(int argc, char **argv)
     bool FT_searchLocalPointsEnabled = (argv[argc-3][2] == '1');
     bool FT_poseEstimationEnabled = (argv[argc-3][3] == '1');
     bool FT_poseOptimizationEnabled = (argv[argc-3][4] == '1');
+    // Sixth bit picks the pose-optimization solver. Older five-character
+    // status strings predate it and keep the GPU path.
+    bool FT_poseOptimizationOnGPU = (std::string(argv[argc-3]).size() > 5)
+                                        ? (argv[argc-3][5] == '1')
+                                        : true;
     
     bool TM_searchForTriangulationEnabled = (argv[argc-2][0] == '1');
     bool TM_fuseEnabled = (argv[argc-2][1] == '1');
@@ -84,7 +89,7 @@ int main(int argc, char **argv)
     if (run_FastTrack) {
         TrackingKernelController::activate();
         TrackingKernelController::setGPURunMode(
-            FT_orbExtractionEnabled, FT_stereoMatchEnabled, FT_searchLocalPointsEnabled, FT_poseEstimationEnabled, FT_poseOptimizationEnabled
+            FT_orbExtractionEnabled, FT_stereoMatchEnabled, FT_searchLocalPointsEnabled, FT_poseEstimationEnabled, FT_poseOptimizationEnabled, FT_poseOptimizationOnGPU
         );
 
         cout << "Activated FastTrack Kernels are: (";

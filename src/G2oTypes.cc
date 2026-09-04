@@ -860,4 +860,20 @@ Eigen::Matrix3d Skew(const Eigen::Vector3d &w)
     return W;
 }
 
+
+ConstraintPoseImu *NewConstraintPoseImu(const Eigen::Matrix3d &Rwb,
+                                        const Eigen::Vector3d &twb,
+                                        const Eigen::Vector3d &vwb,
+                                        const Eigen::Vector3d &bg,
+                                        const Eigen::Vector3d &ba,
+                                        const Matrix15d &H)
+{
+    return new ConstraintPoseImu(Rwb, twb, vwb, bg, ba, H);
+}
+
+void DeleteConstraintPoseImu(ConstraintPoseImu *p)
+{
+    delete p;
+}
+
 }

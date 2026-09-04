@@ -3024,6 +3024,20 @@ void Optimizer::LocalInertialBA(KeyFrame *pKF, bool *pbStopFlag, Map *pMap, int&
     pMap->IncreaseChangeIndex();
 }
 
+void Optimizer::MarginalizeFrameHessian(const double *H30, double *H15)
+{
+    Eigen::MatrixXd H(30, 30);
+    for (int r = 0; r < 30; r++)
+        for (int c = 0; c < 30; c++)
+            H(r, c) = H30[r * 30 + c];
+
+    H = Marginalize(H, 0, 14);
+
+    for (int r = 0; r < 15; r++)
+        for (int c = 0; c < 15; c++)
+            H15[r * 15 + c] = H(15 + r, 15 + c);
+}
+
 Eigen::MatrixXd Optimizer::Marginalize(const Eigen::MatrixXd &H, const int &start, const int &end)
 {
     // Goal
@@ -4773,18 +4787,11 @@ int Optimizer::PoseInertialOptimizationLastKeyFrame(Frame *pFrame, bool bRecInit
     int nInliersMono = 0;
     int nInliersStereo = 0;
     int nInliers = 0;
-
-    optimizer.setVerbose(true);
-    
     for(size_t it=0; it<4; it++)
     {
-                auto tg0 = std::chrono::steady_clock::now();
-
         optimizer.initializeOptimization(0);
         optimizer.optimize(its[it]);
-        auto tg1 = std::chrono::steady_clock::now();
-        std::cout << "PO lm (CPU) took " << std::chrono::duration_cast<std::chrono::duration<double,std::milli>>(tg1 - tg0).count() << " ms" << std::endl;
-        
+
         nBad = 0;
         nBadMono = 0;
         nBadStereo = 0;

@@ -44,8 +44,11 @@ export MPLBACKEND=Agg
 # Defaults
 
 # FastTrack
-kernel_status_FT='11111' # all - don't skip pose optimization (last flag)
-# kernel_status_FT='11110' # Skip pose optimization
+# orbExtraction, stereoMatch, searchLocalPoints, poseEstimation,
+# poseOptimization, poseOptimizationOnGPU
+kernel_status_FT='111111' # all, pose optimization on the GPU
+# kernel_status_FT='111110' # pose optimization on the CPU (g2o)
+# kernel_status_FT='11110'  # skip pose optimization entirely
 
 # TurboMap
 kernel_status_TM='1111' # all

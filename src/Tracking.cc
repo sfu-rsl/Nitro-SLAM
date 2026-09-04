@@ -35,6 +35,7 @@
 #include <iostream>
 
 #include "Kernels/TrackingKernelController.h"
+#include "PoseOptTiming.h"
 
 #include "Kernels/MappingKernelController.h"
 #include "Kernels/CudaKeyFrameAllocator.h"
@@ -3115,62 +3116,43 @@ bool Tracking::TrackLocalMap()
 #endif
 
     if (TrackingKernelController::poseOptimizationRunStatus == 1) {
-        int inliers;
-        if (!mpAtlas->isImuInitialized()) {
-            if (TrackingKernelController::is_active) {
-                OptimizerGPU::PoseOptimization(&mCurrentFrame);
-            }
-            else {
-                Optimizer::PoseOptimization(&mCurrentFrame);
-            }
+        // The sixth FastTrack bit picks the solver: the fused single-kernel GPU
+        // path (src/PoseOptimizationFused.cu) or g2o exactly as stock ORB-SLAM3
+        // runs it. Each call is timed and accumulated per variant, see
+        // PoseOptTiming.h.
+        const bool gpu = TrackingKernelController::is_active &&
+                         TrackingKernelController::poseOptimizationOnGPU;
+        int inliers = 0;
+        PoseOptTiming::Variant po_variant = PoseOptTiming::VISUAL;
+        const auto tpo0 = std::chrono::steady_clock::now();
+
+        if (!mpAtlas->isImuInitialized() ||
+            mCurrentFrame.mnId <= mnLastRelocFrameId + mnFramesToResetIMU)
+        {
+            Verbose::PrintMess("TLM: PoseOptimization ", Verbose::VERBOSITY_DEBUG);
+            po_variant = PoseOptTiming::VISUAL;
+            inliers = gpu ? OptimizerGPU::PoseOptimizationFused(&mCurrentFrame)
+                          : Optimizer::PoseOptimization(&mCurrentFrame);
+        }
+        else if (!mbMapUpdated) //  && (mnMatchesInliers>30))
+        {
+            Verbose::PrintMess("TLM: PoseInertialOptimizationLastFrame ", Verbose::VERBOSITY_DEBUG);
+            po_variant = PoseOptTiming::INERTIAL_F;
+            inliers = gpu ? OptimizerGPU::PoseInertialOptimizationLastFrameFused(&mCurrentFrame)
+                          : Optimizer::PoseInertialOptimizationLastFrame(&mCurrentFrame);
         }
         else
         {
-            if(mCurrentFrame.mnId<=mnLastRelocFrameId+mnFramesToResetIMU)
-            {
-                Verbose::PrintMess("TLM: PoseOptimization ", Verbose::VERBOSITY_DEBUG);
-                if (TrackingKernelController::is_active) {
-                    OptimizerGPU::PoseOptimization(&mCurrentFrame);
-                }
-                else {
-                    Optimizer::PoseOptimization(&mCurrentFrame);
-                }
-            }
-            else
-            {
-                // if(!mbMapUpdated && mState == OK) //  && (mnMatchesInliers>30))
-                if(!mbMapUpdated) //  && (mnMatchesInliers>30))
-                {
-                //  std::cout << "Running Pose opt inertial frame!" << std::endl;
-
-                //     Verbose::PrintMess("TLM: PoseInertialOptimizationLastFrame ", Verbose::VERBOSITY_DEBUG);
-                //     auto tpo0 =  std::chrono::steady_clock::now();
-                //     if (TrackingKernelController::is_active && false) {
-                //         std::cout << "graphite pose opt for inertial frame..." << std::endl;
-                //         inliers = OptimizerGPU::PoseInertialOptimizationLastFrame(&mCurrentFrame); // , !mpLastKeyFrame->GetMap()->GetIniertialBA1());
-                //     }
-                //     else {
-                //         inliers = Optimizer::PoseInertialOptimizationLastFrame(&mCurrentFrame); // , !mpLastKeyFrame->GetMap()->GetIniertialBA1());
-                //     }
-                //     auto tpo1 =  std::chrono::steady_clock::now();
-                //     std::cout << "PO for Inertial Frame took " <<   std::chrono::duration_cast<std::chrono::duration<double,std::milli> >(tpo1 - tpo0).count() << " ms" << std::endl;
-                }
-                else
-                {
-                    Verbose::PrintMess("TLM: PoseInertialOptimizationLastKeyFrame ", Verbose::VERBOSITY_DEBUG);
-                    auto tpo0 =  std::chrono::steady_clock::now();
-                    if (TrackingKernelController::is_active && false) {
-                        inliers = OptimizerGPU::PoseInertialOptimizationLastKeyFrame(&mCurrentFrame); // , !mpLastKeyFrame->GetMap()->GetIniertialBA1());
-                    }
-                    else {
-                        inliers = Optimizer::PoseInertialOptimizationLastKeyFrame(&mCurrentFrame); // , !mpLastKeyFrame->GetMap()->GetIniertialBA1());
-                    }
-                    auto tpo1 =  std::chrono::steady_clock::now();
-                    std::cout << "PO for Inertial KF took " <<   std::chrono::duration_cast<std::chrono::duration<double,std::milli> >(tpo1 - tpo0).count() << " ms" << std::endl;
-
-                }
-            }
+            Verbose::PrintMess("TLM: PoseInertialOptimizationLastKeyFrame ", Verbose::VERBOSITY_DEBUG);
+            po_variant = PoseOptTiming::INERTIAL_KF;
+            inliers = gpu ? OptimizerGPU::PoseInertialOptimizationLastKeyFrameFused(&mCurrentFrame)
+                          : Optimizer::PoseInertialOptimizationLastKeyFrame(&mCurrentFrame);
         }
+
+        const auto tpo1 = std::chrono::steady_clock::now();
+        PoseOptTiming::record(po_variant,
+            std::chrono::duration_cast<std::chrono::duration<double, std::milli> >(tpo1 - tpo0).count(),
+            inliers, gpu);
     }
 #ifdef REGISTER_TRACKING_STATS 
     std::chrono::steady_clock::time_point PO_end = std::chrono::steady_clock::now(); 

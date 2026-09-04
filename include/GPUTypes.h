@@ -496,6 +496,84 @@ typename PoseDescriptor> struct InertialConstraint {
     }
 
   }
+
+  // All six vertex Jacobians in a single pass, stacked column major as a 9x24
+  // matrix over [pose1 | vel1 | gyro1 | acc1 | pose2 | vel2] -- the block for
+  // vertex I starts at column offset {0,6,9,12,15,21}.
+  //
+  // Six separate jacobian<I> calls repeat the whole prologue six times, and
+  // that prologue contains GetDeltaRotation, whose NormalizeRotation is an
+  // iterative SVD. On the CPU that redundancy is invisible; in the fused GPU
+  // solver it runs on one thread inside the LM loop and dominates the
+  // per-iteration cost, so the shared work is hoisted out here.
+  template <typename D>
+  hd_fn static void jacobian_all(const Pose &VP1, const Velocity<T>& VV1, const GyroBias<T>& VG1,
+                                 const AccBias<T>& VA1, const Pose& VP2, const Velocity<T>& VV2,
+                                 const Data &data, D *J) {
+    const auto mpInt = &(data.mpInt);
+    const auto g = data.g;
+    const auto dt = data.dt;
+
+    const Bias<D> b1(VA1[0],VA1[1],VA1[2],VG1[0],VG1[1],VG1[2]);
+    const auto db = mpInt->GetDeltaBias(b1);
+    Vec3<D> dbg;
+    dbg << db.bwx, db.bwy, db.bwz;
+
+    const Mat3<D> Rwb1 = VP1.Rwb;
+    const Mat3<D> Rbw1 = Rwb1.transpose();
+    const Mat3<D> Rwb2 = VP2.Rwb;
+
+    const Mat3<D> dR = mpInt->GetDeltaRotation(b1).template cast<D>();
+    const Mat3<D> eR = dR.transpose()*Rbw1*Rwb2;
+    const Vec3<D> er = LogSO3(eR);
+    const Mat3<D> invJr = InverseRightJacobianSO3(er);
+
+    // Pose 1 (columns 0..5)
+    {
+      Eigen::Map<Eigen::Matrix<D, 9, 6>> Jp1(J);
+      Jp1.setZero();
+      Jp1.template block<3,3>(0,0) = -invJr*Rwb2.transpose()*Rwb1;
+      Jp1.template block<3,3>(3,0) = Sophus::SO3<D>::hat(Rbw1*(VV2 - VV1 - g*dt)).template cast<D>();
+      Jp1.template block<3,3>(6,0) = Sophus::SO3<D>::hat(Rbw1*(VP2.twb - VP1.twb
+                                                    - VV1*dt - 0.5*g*dt*dt)).template cast<D>();
+      Jp1.template block<3,3>(6,3) = -Mat3<D>::Identity();
+    }
+    // Velocity 1 (columns 6..8)
+    {
+      Eigen::Map<Eigen::Matrix<D, 9, 3>> Jv1(J + 6 * 9);
+      Jv1.setZero();
+      Jv1.template block<3,3>(3,0) = -Rbw1;
+      Jv1.template block<3,3>(6,0) = -Rbw1*dt;
+    }
+    // Gyro bias 1 (columns 9..11)
+    {
+      Eigen::Map<Eigen::Matrix<D, 9, 3>> Jg1(J + 9 * 9);
+      Jg1.setZero();
+      Jg1.template block<3,3>(0,0) = -invJr*eR.transpose()*RightJacobianSO3<D>(mpInt->JRg*dbg)*mpInt->JRg;
+      Jg1.template block<3,3>(3,0) = -mpInt->JVg;
+      Jg1.template block<3,3>(6,0) = -mpInt->JPg;
+    }
+    // Accelerometer bias 1 (columns 12..14)
+    {
+      Eigen::Map<Eigen::Matrix<D, 9, 3>> Ja1(J + 12 * 9);
+      Ja1.setZero();
+      Ja1.template block<3,3>(3,0) = -mpInt->JVa;
+      Ja1.template block<3,3>(6,0) = -mpInt->JPa;
+    }
+    // Pose 2 (columns 15..20)
+    {
+      Eigen::Map<Eigen::Matrix<D, 9, 6>> Jp2(J + 15 * 9);
+      Jp2.setZero();
+      Jp2.template block<3,3>(0,0) = invJr;
+      Jp2.template block<3,3>(6,3) = Rbw1*Rwb2;
+    }
+    // Velocity 2 (columns 21..23)
+    {
+      Eigen::Map<Eigen::Matrix<D, 9, 3>> Jv2(J + 21 * 9);
+      Jv2.setZero();
+      Jv2.template block<3,3>(3,0) = Rbw1;
+    }
+  }
 };
 
 template <typename T, typename S, typename L,

@@ -729,6 +729,26 @@ public:
     Matrix15d H;
 };
 
+// Construct a ConstraintPoseImu from a C++ translation unit.
+//
+// EIGEN_MAKE_ALIGNED_OPERATOR_NEW selects its allocator from
+// EIGEN_MAX_ALIGN_BYTES, and the CUDA host compiler does not receive the
+// -march=native that the C++ compiler does (see CMakeLists.txt), so a .cu file
+// sees 16 bytes and a .cc file sees 32 -- which pairs std::malloc against
+// Eigen's handmade_aligned_free.  Everything that deletes these objects lives
+// in .cc files, so GPU code must allocate through this factory rather than
+// with a bare `new`, or the delete segfaults inside free().
+ConstraintPoseImu *NewConstraintPoseImu(const Eigen::Matrix3d &Rwb,
+                                        const Eigen::Vector3d &twb,
+                                        const Eigen::Vector3d &vwb,
+                                        const Eigen::Vector3d &bg,
+                                        const Eigen::Vector3d &ba,
+                                        const Matrix15d &H);
+
+// The matching deleter: a bare `delete` from a .cu file would pair that
+// translation unit's std::free against the aligned allocation this made.
+void DeleteConstraintPoseImu(ConstraintPoseImu *p);
+
 class EdgePriorPoseImu : public g2o::BaseMultiEdge<15,Vector15d>
 {
 public:

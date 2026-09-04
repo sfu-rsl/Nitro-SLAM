@@ -14,6 +14,7 @@ bool TrackingKernelController::stereoMatchKernelRunStatus = false;
 bool TrackingKernelController::searchLocalPointsKernelRunStatus = false;
 bool TrackingKernelController::poseEstimationKernelRunStatus = false;
 bool TrackingKernelController::poseOptimizationRunStatus = true;
+bool TrackingKernelController::poseOptimizationOnGPU = true;
 bool TrackingKernelController::memory_is_initialized = false;
 bool TrackingKernelController::stereoMatchDataHasMovedForward = false;
 std::unique_ptr<SearchLocalPointsKernel> TrackingKernelController::mpSearchLocalPointsKernel = std::make_unique<SearchLocalPointsKernel>();
@@ -33,12 +34,13 @@ void TrackingKernelController::activate(){
     is_active = true;
 }
 
-void TrackingKernelController::setGPURunMode(bool orbExtractionStatus, bool stereoMatchStatus, bool searchLocalPointsStatus, bool poseEstimationStatus, bool poseOptimizationStatus) {
+void TrackingKernelController::setGPURunMode(bool orbExtractionStatus, bool stereoMatchStatus, bool searchLocalPointsStatus, bool poseEstimationStatus, bool poseOptimizationStatus, bool poseOptimizationOnGPUStatus) {
     orbExtractionKernelRunStatus = orbExtractionStatus;
     stereoMatchKernelRunStatus = stereoMatchStatus;
     searchLocalPointsKernelRunStatus = searchLocalPointsStatus;
     poseEstimationKernelRunStatus = poseEstimationStatus;
     poseOptimizationRunStatus = poseOptimizationStatus;
+    poseOptimizationOnGPU = poseOptimizationOnGPUStatus;
 }
 
 void TrackingKernelController::initializeKernels(){

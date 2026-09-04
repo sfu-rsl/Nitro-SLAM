@@ -59,18 +59,19 @@ Use this script to run an isolated experiment on a specific dataset sequence wit
 
 #### Default Kernel Bitmasks:
 If not explicitly passed, the framework defaults to fully operational bitmasks for activated components:
-* **FastTrack:** `11111`
+* **FastTrack:** `111111`
 * **TurboMap:** `1111`
 * **FastLoop:** `001111`
 
 Each digit position within a passed bitmask acts as a binary switch (`1` to enable, `0` to disable) for a specific algorithmic sub-kernel or routine:
 
-##### FastTrack (5-Digit Configuration)
-1. **1**xxxx : ORB feature extraction acceleration on GPU.
-2. x**1**xxx : Stereo feature matching optimization on GPU.
-3. xx**1**xx : Local map points search acceleration on GPU.
-4. xxx**1**x : Camera pose estimation acceleration on GPU.
-5. xxxx**1** : Tracking pose optimization on/off toggle.
+##### FastTrack (6-Digit Configuration)
+1. **1**xxxxx : ORB feature extraction acceleration on GPU.
+2. x**1**xxxx : Stereo feature matching optimization on GPU.
+3. xx**1**xxx : Local map points search acceleration on GPU.
+4. xxx**1**xx : Camera pose estimation acceleration on GPU.
+5. xxxx**1**x : Tracking pose optimization on/off toggle.
+6. xxxxx**1** : Tracking pose optimization solver — `1` runs the fused single-kernel GPU solver, `0` runs g2o on the CPU. Ignored when digit 5 is `0`. A legacy 5-digit bitmask is accepted and keeps the GPU solver.
 
 ##### TurboMap (4-Digit Configuration)
 1. **1**xxx : Map-point triangulation search acceleration on GPU.

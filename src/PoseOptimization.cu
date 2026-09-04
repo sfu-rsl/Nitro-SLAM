@@ -388,7 +388,6 @@ int PoseInertialOptimizationLastKFInternal(Frame *pFrame, bool bRecInit)
     const int nInitialCorrespondences = nInitialMonoCorrespondences + nInitialStereoCorrespondences;
 
     auto tpre1 = std::chrono::steady_clock::now();
-    std::cout << "PO Pre-Setup (vertices+correspondences) took " << std::chrono::duration_cast<std::chrono::duration<double,std::milli>>(tpre1 - tpre0).count() << " ms" << std::endl;
 
     // ---- Graphite graph setup ----
     auto tsetup0 = std::chrono::steady_clock::now();
@@ -480,7 +479,6 @@ int PoseInertialOptimizationLastKFInternal(Frame *pFrame, bool bRecInit)
     graph.add_factor_descriptor(&accrw_desc);
 
     auto tsetup1 = std::chrono::steady_clock::now();
-    std::cout << "PO Graph Setup took " << std::chrono::duration_cast<std::chrono::duration<double,std::milli>>(tsetup1 - tsetup0).count() << " ms" << std::endl;
 
     // ---- Optimization loop (4 iterations, decreasing chi2 thresholds) ----
     auto topt0 = std::chrono::steady_clock::now();
@@ -511,7 +509,6 @@ int PoseInertialOptimizationLastKFInternal(Frame *pFrame, bool bRecInit)
         auto tg0 = std::chrono::steady_clock::now();
         optimizer::levenberg_marquardt2<FP, SP>(&graph, &options);
         auto tg1 = std::chrono::steady_clock::now();
-        std::cout << "PO lm took " << std::chrono::duration_cast<std::chrono::duration<double,std::milli>>(tg1 - tg0).count() << " ms" << std::endl;
 
         nBad = 0;
         nInliers = nInliersMono = nInliersStereo = 0;
@@ -563,7 +560,6 @@ int PoseInertialOptimizationLastKFInternal(Frame *pFrame, bool bRecInit)
     }
 
     auto topt1 = std::chrono::steady_clock::now();
-    std::cout << "PO Graph Optimization took " << std::chrono::duration_cast<std::chrono::duration<double,std::milli>>(topt1 - topt0).count() << " ms" << std::endl;
 
     // ---- Recovery: relax thresholds if too few inliers ----
     if (nInliers < 30 && !bRecInit) {
@@ -661,10 +657,9 @@ int PoseInertialOptimizationLastKFInternal(Frame *pFrame, bool bRecInit)
     }
         auto th1 =  std::chrono::steady_clock::now();
 
-         std::cout << "PO Hessian took " <<   std::chrono::duration_cast<std::chrono::duration<double,std::milli> >(th1 - th0).count() << " ms" << std::endl;
 
 
-    pFrame->mpcpi = new ConstraintPoseImu(
+    pFrame->mpcpi = NewConstraintPoseImu(
         frame_pose[0].Rwb.template cast<double>(),
         frame_pose[0].twb.template cast<double>(),
         frame_vel[0].template cast<double>(),
@@ -1143,17 +1138,19 @@ int PoseInertialOptimizationLastFInternal(Frame *pFrame, bool bRecInit)
     }
 
     // Marginalize prev frame states (0..14) → 15x15 prior for current frame
-    H30 = Optimizer::Marginalize(H30, 0, 14);
+    Eigen::Matrix<double, 30, 30, Eigen::RowMajor> H30r = H30;
+    Eigen::Matrix<double, 15, 15> Hprior;
+    Optimizer::MarginalizeFrameHessian(H30r.data(), Hprior.data());
 
-    pFrame->mpcpi = new ConstraintPoseImu(
+    pFrame->mpcpi = NewConstraintPoseImu(
         curr_pose[0].Rwb.template cast<double>(),
         curr_pose[0].twb.template cast<double>(),
         curr_vel[0].template cast<double>(),
         curr_gyrobias[0].template cast<double>(),
         curr_accbias[0].template cast<double>(),
-        H30.block<15,15>(15,15));
+        Hprior);
 
-    delete pFp->mpcpi;
+    DeleteConstraintPoseImu(pFp->mpcpi);
     pFp->mpcpi = nullptr;
 
     for (auto& [cam_ptr, cam] : cameras) cudaFree(cam);

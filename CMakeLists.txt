@@ -157,6 +157,8 @@ src/LocalBA.cu
 src/LIBA.cu
 src/FIBA.cu
 src/PoseOptimization.cu
+src/PoseOptimizationFused.cu
+src/PoseOptTiming.cc
 src/Frame.cc
 src/KeyFrameDatabase.cc
 src/Sim3Solver.cc
@@ -255,6 +257,8 @@ include/Kernels/CudaWrappers/CudaKeyPoint.h
 include/Kernels/SearchByProjectionKernel.h
 include/Kernels/SearchAndFuseKernel.h
 include/GPUPose.h
+include/PoseOptTiming.h
+include/FusedLM.h
 include/GPUTypes.h
 include/GPUImu.h
 include/PGOTypes.h

@@ -20,13 +20,17 @@ public:
 
     static void activate();
     
-    static void setGPURunMode(bool orbExtractionStatus, bool stereoMatchStatus, bool searchLocalPointsStatus, bool poseEstimationStatus, bool poseOptimizationStatus);
+    static void setGPURunMode(bool orbExtractionStatus, bool stereoMatchStatus, bool searchLocalPointsStatus, bool poseEstimationStatus, bool poseOptimizationStatus, bool poseOptimizationOnGPUStatus = true);
 
     static bool orbExtractionKernelRunStatus;
     static bool stereoMatchKernelRunStatus;
     static bool searchLocalPointsKernelRunStatus;
     static bool poseEstimationKernelRunStatus;
     static bool poseOptimizationRunStatus;
+    // Sixth FastTrack bit: which solver serves the pose optimizations once
+    // poseOptimizationRunStatus has enabled them at all. 1 = the fused GPU
+    // kernel, 0 = g2o on the CPU.
+    static bool poseOptimizationOnGPU;
 
     static void initializeKernels();
     
