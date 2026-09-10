@@ -62,6 +62,14 @@ export RESULTS_ROOT   # read by run_script.sh
 interval=0.05
 LOG=timing_batch_${group}.log
 
+# Arms to run, as a "|"-separated list of "FastTrack TurboMap FastLoop" triples.
+# The default pairs the ORB-SLAM3 baseline with the full stack. Override with
+# ARMS="1 1 1" to collect only Nitro-SLAM -- the baseline is untouched by the
+# GPU pose-optimization work, so an existing baseline set can be reused instead
+# of spending half the batch recollecting it.
+ARMS=${ARMS:-"0 0 0|1 1 1"}
+IFS='|' read -r -a arm_list <<< "$ARMS"
+
 # Keep a durable record of a job that is expected to be interrupted and resumed.
 exec > >(tee -a "$LOG") 2>&1
 
@@ -73,7 +81,7 @@ kTM=$(grep -E "^kernel_status_TM='" run_script.sh | head -1 | sed "s/.*'\([01]*\
 kFL=$(grep -E "^kernel_status_FL='" run_script.sh | head -1 | sed "s/.*'\([01]*\)'.*/\1/")
 nitro_kdir="${kFT}-${kTM}-${kFL}"
 echo "[batch] $(date +%F\ %T) group=$group root=$RESULTS_ROOT version=$version iters=$num_itr${filter:+ filter=$filter}"
-echo "[batch] ${#datasets[@]} sequences, Nitro-SLAM kernel dir: ${nitro_kdir}"
+echo "[batch] ${#datasets[@]} sequences, arms: ${ARMS}, Nitro-SLAM kernel dir: ${nitro_kdir}"
 
 # Exact comm match: Linux truncates comm to 15 chars, so the process is
 # "stereo_inertial". Matching on the full command line would also match this
@@ -94,7 +102,7 @@ run_timeout() {
 for i in $(seq 0 $((num_itr - 1))); do
     echo "[batch] ===== pass $i / $((num_itr - 1)) ====="
     for dataset in "${datasets[@]}"; do
-        for cfg in "0 0 0" "1 1 1"; do
+        for cfg in "${arm_list[@]}"; do
             set -- $cfg
             if [ "$1" -eq 1 ]; then
                 statsDir="${RESULTS_ROOT}/Nitro-SLAM/${nitro_kdir}/${version}/${dataset}/${i}"
