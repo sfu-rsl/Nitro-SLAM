@@ -22,8 +22,25 @@ interval=0.1
 LOG=power_probe.log
 exec > >(tee -a "$LOG") 2>&1
 
-kFT=11111; kTM=1111; kFL=001111
+# Read the kernel statuses out of run_script.sh rather than duplicating them, so
+# changing the defaults there is enough (same approach as run_timing_batch.sh).
+# These are passed to run_script.sh as explicit overrides, so a stale value here
+# silently changes what is measured, not just where the trace is written.
+kFT=$(grep -E "^kernel_status_FT='" run_script.sh | head -1 | sed "s/.*'\([01]*\)'.*/\1/")
+kTM=$(grep -E "^kernel_status_TM='" run_script.sh | head -1 | sed "s/.*'\([01]*\)'.*/\1/")
+kFL=$(grep -E "^kernel_status_FL='" run_script.sh | head -1 | sed "s/.*'\([01]*\)'.*/\1/")
 nitro_kdir="${kFT}-${kTM}-${kFL}"
+
+# Which arms to trace. Both by default; set ARMS="nitro" to skip the ORB-SLAM3
+# baseline when a comparable one already exists (same knob as run_timing_batch.sh).
+cfgs=()
+for arm in ${ARMS:-orb nitro}; do
+    case "$arm" in
+        orb)   cfgs+=("0 0 0") ;;
+        nitro) cfgs+=("1 1 1") ;;
+        *)     echo "unknown arm '$arm' (expected orb or nitro)"; exit 1 ;;
+    esac
+done
 
 # seq:results_root:watchdog
 JOBS=(
@@ -39,12 +56,12 @@ JOBS=(
 cleanup() { pkill -KILL -x stereo_inertial 2>/dev/null; sleep 2; }
 trap 'echo "[power] interrupted"; cleanup; exit 130' INT TERM
 
-echo "[power] $(date +%F\ %T) version=$version interval=${interval}s"
+echo "[power] $(date +%F\ %T) version=$version interval=${interval}s arms=${ARMS:-orb nitro}"
 
 for job in "${JOBS[@]}"; do
     IFS=: read -r ds root wd <<< "$job"
     export RESULTS_ROOT="$root"
-    for cfg in "0 0 0" "1 1 1"; do
+    for cfg in "${cfgs[@]}"; do
         set -- $cfg
         if [ "$1" -eq 1 ]; then
             statsDir="${root}/Nitro-SLAM/${nitro_kdir}/${version}/${ds}/0"
