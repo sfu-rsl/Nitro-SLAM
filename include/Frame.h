@@ -93,6 +93,10 @@ public:
     Eigen::Matrix<float,3,3> GetImuRotation();
     Sophus::SE3<float> GetImuPose();
 
+    // Sets the stereo rig transform that the fisheye constructor otherwise
+    // establishes, so a frame assembled field by field (a test, a replay of
+    // captured inputs) can present a complete two-camera geometry.
+    void SetRelativePoseTlr(const Sophus::SE3<float> &Tlr);
     Sophus::SE3f GetRelativePoseTrl() const;
     Sophus::SE3f GetRelativePoseTlr();
     Eigen::Matrix3f GetRelativePoseTlr_rotation();

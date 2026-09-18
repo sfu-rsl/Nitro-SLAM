@@ -379,9 +379,13 @@ pose_only_kernel(gpu::ImuCamPose<FT, Camera> *pose_io, const Camera *cams,
         for (int i = threadIdx.x; i < nfac; i += blockDim.x) {
             active[i] = outlier[i] ? 0 : 1;
         }
-        // g2o drops the Huber kernel after the third round ("if(it==2)
-        // e->setRobustKernel(0)"); an effectively infinite delta is the same
-        // thing without a second code path.
+        // g2o's "if(it==2) e->setRobustKernel(0)" sits *after* optimize() in its
+        // round loop, so clearing the kernel at the end of round 2 only affects
+        // round 3: rounds 0-2 are robustified and the last one is not. Gating on
+        // round >= 3 reproduces that. (Reading it as "off from round 2 onward" and
+        // gating on round >= 2 measurably increases divergence from g2o -- it is one
+        // round of Huber too few.) An effectively infinite delta is the same thing
+        // as clearing the kernel, without a second code path.
         if (round >= 3) {
             problem.huber_mono2 = kNoRobust;
             problem.huber_stereo2 = kNoRobust;
@@ -581,6 +585,7 @@ __global__ __launch_bounds__(kBlockThreads) void inertial_kf_kernel(
         for (int i = threadIdx.x; i < nfac; i += blockDim.x) {
             active[i] = outlier[i] ? 0 : 1;
         }
+        // Last round only, matching g2o's post-optimize clear; see pose_only_kernel.
         if (round >= 3) {
             problem.huber_mono2 = kNoRobust;
             problem.huber_stereo2 = kNoRobust;
@@ -869,6 +874,7 @@ __global__ __launch_bounds__(kBlockThreads) void inertial_frame_kernel(
         for (int i = threadIdx.x; i < nfac; i += blockDim.x) {
             active[i] = outlier[i] ? 0 : 1;
         }
+        // Last round only, matching g2o's post-optimize clear; see pose_only_kernel.
         if (round >= 3) {
             problem.huber_mono2 = kNoRobust;
             problem.huber_stereo2 = kNoRobust;
@@ -1035,6 +1041,12 @@ FusedLMOptions default_options() {
     opt.iterations = 10;
     opt.initial_damping = 1e-4;
     opt.use_identity = false;
+    // Match g2o: no Jacobi column scaling, and one absolute lambda added to the raw
+    // diagonal (tau * max diag). With scaling on, damping is relative per direction
+    // and weakly observable geometry is left almost unregularised, which is where
+    // the two solvers were diverging -- see the depth sweep in
+    // Examples/Tests/test_pose_optimization.cc.
+    opt.jacobi_scaling = false;
     return opt;
 }
 
@@ -1591,7 +1603,14 @@ static int PoseInertialOptimizationLastFrameFusedInternal(Frame *pFrame, bool bR
         h_prior->ba[r] = FT(pFp->mpcpi->ba[r]);
     }
 
-    const float chi2Mono[4]   = {12.f, 7.5f, 5.991f, 5.991f};
+    // The frame-to-frame variant gates mono residuals at 5.991 in every round.
+    // g2o's PoseInertialOptimizationLastFrame uses {5.991, 5.991, 5.991, 5.991};
+    // only the *keyframe* variant opens the first two rounds up to {12, 7.5}, and
+    // this array had been copied from there. The looser early rounds let the fused
+    // solver carry outliers that g2o had already rejected into the rounds that set
+    // the pose, which showed up as a systematic inlier surplus -- +709 net over
+    // outdoors6 -- and as the divergence that surplus caused.
+    const float chi2Mono[4]   = {5.991f, 5.991f, 5.991f, 5.991f};
     const float chi2Stereo[4] = {15.6f, 9.8f, 7.815f, 7.815f};
     for (int k = 0; k < 4; k++) {
         h_chi2m[k] = FT(chi2Mono[k]);

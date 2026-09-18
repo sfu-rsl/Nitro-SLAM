@@ -158,6 +158,7 @@ src/LIBA.cu
 src/FIBA.cu
 src/PoseOptimizationFused.cu
 src/PoseOptTiming.cc
+src/PoseOptShadow.cc
 src/Frame.cc
 src/KeyFrameDatabase.cc
 src/Sim3Solver.cc
@@ -580,3 +581,7 @@ target_link_libraries(test_orb_extraction ${PROJECT_NAME})
 add_executable(bench_orb_extraction
         Examples/Tests/bench_orb_extraction.cc)
 target_link_libraries(bench_orb_extraction ${PROJECT_NAME})
+
+add_executable(test_pose_optimization
+        Examples/Tests/test_pose_optimization.cc)
+target_link_libraries(test_pose_optimization ${PROJECT_NAME})

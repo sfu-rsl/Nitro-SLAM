@@ -18,6 +18,7 @@
 
 
 #include "Tracking.h"
+#include "PoseOptShadow.h"
 #include <unistd.h>
 
 #include "ORBmatcher.h"
@@ -3126,27 +3127,73 @@ bool Tracking::TrackLocalMap()
         PoseOptTiming::Variant po_variant = PoseOptTiming::VISUAL;
         const auto tpo0 = std::chrono::steady_clock::now();
 
+        // Which of the three the frame needs is decided the same way in both
+        // backends; picking it once here keeps the shadow comparison honest, since
+        // both solvers then run the same variant on the same input.
+        enum { PO_VISUAL = 0, PO_INERTIAL_F = 1, PO_INERTIAL_KF = 2 };
+        int which;
         if (!mpAtlas->isImuInitialized() ||
-            mCurrentFrame.mnId <= mnLastRelocFrameId + mnFramesToResetIMU)
-        {
-            Verbose::PrintMess("TLM: PoseOptimization ", Verbose::VERBOSITY_DEBUG);
+            mCurrentFrame.mnId <= mnLastRelocFrameId + mnFramesToResetIMU) {
+            which = PO_VISUAL;
             po_variant = PoseOptTiming::VISUAL;
-            inliers = gpu ? OptimizerGPU::PoseOptimizationFused(&mCurrentFrame)
-                          : Optimizer::PoseOptimization(&mCurrentFrame);
-        }
-        else if (!mbMapUpdated) //  && (mnMatchesInliers>30))
-        {
-            Verbose::PrintMess("TLM: PoseInertialOptimizationLastFrame ", Verbose::VERBOSITY_DEBUG);
+            Verbose::PrintMess("TLM: PoseOptimization ", Verbose::VERBOSITY_DEBUG);
+        } else if (!mbMapUpdated) {
+            which = PO_INERTIAL_F;
             po_variant = PoseOptTiming::INERTIAL_F;
-            inliers = gpu ? OptimizerGPU::PoseInertialOptimizationLastFrameFused(&mCurrentFrame)
-                          : Optimizer::PoseInertialOptimizationLastFrame(&mCurrentFrame);
-        }
-        else
-        {
-            Verbose::PrintMess("TLM: PoseInertialOptimizationLastKeyFrame ", Verbose::VERBOSITY_DEBUG);
+            Verbose::PrintMess("TLM: PoseInertialOptimizationLastFrame ", Verbose::VERBOSITY_DEBUG);
+        } else {
+            which = PO_INERTIAL_KF;
             po_variant = PoseOptTiming::INERTIAL_KF;
-            inliers = gpu ? OptimizerGPU::PoseInertialOptimizationLastKeyFrameFused(&mCurrentFrame)
-                          : Optimizer::PoseInertialOptimizationLastKeyFrame(&mCurrentFrame);
+            Verbose::PrintMess("TLM: PoseInertialOptimizationLastKeyFrame ", Verbose::VERBOSITY_DEBUG);
+        }
+
+        auto run_backend = [&](bool use_gpu) -> int {
+            switch (which) {
+                case PO_VISUAL:
+                    return use_gpu ? OptimizerGPU::PoseOptimizationFused(&mCurrentFrame)
+                                   : Optimizer::PoseOptimization(&mCurrentFrame);
+                case PO_INERTIAL_F:
+                    return use_gpu
+                        ? OptimizerGPU::PoseInertialOptimizationLastFrameFused(&mCurrentFrame)
+                        : Optimizer::PoseInertialOptimizationLastFrame(&mCurrentFrame);
+                default:
+                    return use_gpu
+                        ? OptimizerGPU::PoseInertialOptimizationLastKeyFrameFused(&mCurrentFrame)
+                        : Optimizer::PoseInertialOptimizationLastKeyFrame(&mCurrentFrame);
+            }
+        };
+
+        if (PoseOptShadow::Enabled()) {
+            // Run both on identical input and record how far apart they land. The
+            // frame is put back between the two so the second solver sees exactly
+            // what the first did, and the kept answer is the backend this run is
+            // configured for, so the trajectory is the one it would have followed.
+            const PoseOptShadow::FrameState before =
+                PoseOptShadow::Capture(mCurrentFrame);
+            const int cpu_inliers = run_backend(false);
+            const PoseOptShadow::FrameState after_cpu =
+                PoseOptShadow::Capture(mCurrentFrame);
+
+            PoseOptShadow::Restore(mCurrentFrame, before);
+            const int gpu_inliers = run_backend(true);
+            const PoseOptShadow::FrameState after_gpu =
+                PoseOptShadow::Capture(mCurrentFrame);
+
+            int nfac = 0;
+            for (int i = 0; i < mCurrentFrame.N; i++)
+                if (mCurrentFrame.mvpMapPoints[i]) nfac++;
+            PoseOptShadow::Record(which, static_cast<long>(mCurrentFrame.mnId), nfac,
+                                  after_cpu, cpu_inliers, after_gpu, gpu_inliers,
+                                  mCurrentFrame);
+
+            if (PoseOptShadow::KeepGpu()) {
+                inliers = gpu_inliers;   // already in the frame
+            } else {
+                PoseOptShadow::Restore(mCurrentFrame, after_cpu);
+                inliers = cpu_inliers;
+            }
+        } else {
+            inliers = run_backend(gpu);
         }
 
         const auto tpo1 = std::chrono::steady_clock::now();

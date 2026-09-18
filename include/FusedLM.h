@@ -52,6 +52,20 @@ struct FusedLMOptions {
   int max_negligible_steps = 3;
   /// Reuse the damping factor from the previous call instead of resetting it.
   bool warm_start_damping = false;
+  /// Rescale the Jacobian columns to a unit diagonal before damping and solving.
+  ///
+  /// g2o does not do this: it adds a single lambda to the raw diagonal, so every
+  /// direction is damped by the same absolute amount and a weakly curved one is
+  /// therefore damped heavily relative to its own curvature. Scaling first and then
+  /// damping multiplicatively makes the damping *relative* instead -- each direction
+  /// is damped in proportion to what curvature it already has -- which leaves a
+  /// near-null direction almost free. The two agree wherever the problem is well
+  /// conditioned and part company where it is not, which is what the depth sweep in
+  /// test_pose_optimization measures.
+  bool jacobi_scaling = true;
+  /// With jacobi_scaling off, the initial damping is tau * max(diag(H)), which is
+  /// how g2o picks its first lambda; `initial_damping` is then ignored.
+  double tau = 1.0e-5;
 };
 
 /// Shared-memory scratch for a `dim`-dimensional problem.  The caller declares
@@ -181,9 +195,10 @@ template <> __device__ inline float lm_huge<float>() { return 3.0e38f; }
 /// Relinearise: recompute H, b, chi2 and the column scaling at `state`.
 /// Block-cooperative; leaves the block synchronised on exit.
 template <int Dim, typename T, typename Problem, typename State>
-__device__ inline void fused_linearize(const Problem &problem,
+__device__ inline void fused_linearize_impl(const Problem &problem,
                                        const State &state,
-                                       FusedLMScratch<Dim, T> &sc) {
+                                       FusedLMScratch<Dim, T> &sc,
+                                      bool scale_columns) {
   const int tid = threadIdx.x;
   const int nthreads = blockDim.x;
 
@@ -202,20 +217,33 @@ __device__ inline void fused_linearize(const Problem &problem,
   __syncthreads();
 
   if (tid < Dim) {
-    const double diag = static_cast<double>(sc.H0[tid * Dim + tid]);
-    sc.scale[tid] =
-        static_cast<T>(1.0 / (static_cast<double>(lm_epsilon<T>()) +
-                              sqrt(diag > 0.0 ? diag : 0.0)));
+    if (scale_columns) {
+      const double diag = static_cast<double>(sc.H0[tid * Dim + tid]);
+      sc.scale[tid] =
+          static_cast<T>(1.0 / (static_cast<double>(lm_epsilon<T>()) +
+                                sqrt(diag > 0.0 ? diag : 0.0)));
+    } else {
+      // Unscaled: the step comes back in the real parameterisation already.
+      sc.scale[tid] = T(1);
+    }
   }
   __syncthreads();
 
-  for (int idx = tid; idx < Dim * Dim; idx += nthreads) {
-    sc.H0[idx] *= sc.scale[idx / Dim] * sc.scale[idx % Dim];
-  }
-  for (int i = tid; i < Dim; i += nthreads) {
-    sc.b[i] *= sc.scale[i];
+  if (scale_columns) {
+    for (int idx = tid; idx < Dim * Dim; idx += nthreads) {
+      sc.H0[idx] *= sc.scale[idx / Dim] * sc.scale[idx % Dim];
+    }
+    for (int i = tid; i < Dim; i += nthreads) {
+      sc.b[i] *= sc.scale[i];
+    }
   }
   __syncthreads();
+}
+
+template <int Dim, typename T, typename Problem, typename State>
+__device__ inline void fused_linearize(const Problem &problem, State &state,
+                                       FusedLMScratch<Dim, T> &sc) {
+  fused_linearize_impl<Dim, T>(problem, state, sc, true);
 }
 
 /// Recompute only chi2 at `state`.  Block-cooperative; synchronised on exit.
@@ -242,16 +270,28 @@ __device__ inline void fused_levenberg_marquardt(const Problem &problem,
   const int nthreads = blockDim.x;
 
   if (tid == 0) {
-    if (!opt.warm_start_damping) {
-      sc.mu = static_cast<T>(opt.initial_damping);
-    }
     sc.nu = T(2);
     sc.num_bad = 0;
     sc.run = true;
   }
   __syncthreads();
 
-  fused_linearize<Dim, T>(problem, state, sc);
+  fused_linearize_impl<Dim, T>(problem, state, sc, opt.jacobi_scaling);
+
+  if (tid == 0 && !opt.warm_start_damping) {
+    if (opt.jacobi_scaling) {
+      sc.mu = static_cast<T>(opt.initial_damping);
+    } else {
+      // g2o's computeLambdaInit: tau times the largest diagonal entry.
+      double maxdiag = 0.0;
+      for (int i = 0; i < Dim; ++i) {
+        const double d = static_cast<double>(sc.H0[i * Dim + i]);
+        if (d > maxdiag) maxdiag = d;
+      }
+      sc.mu = static_cast<T>(opt.tau * (maxdiag > 0.0 ? maxdiag : 1.0));
+    }
+  }
+  __syncthreads();
 
   for (int it = 0; it < opt.iterations; ++it) {
     const T initial_chi2 = sc.chi2;
@@ -265,7 +305,7 @@ __device__ inline void fused_levenberg_marquardt(const Problem &problem,
       const double h = static_cast<double>(sc.H0[tid * Dim + tid]);
       const double mu = static_cast<double>(sc.mu);
       const double damped =
-          opt.use_identity
+          (opt.use_identity || !opt.jacobi_scaling)
               ? h + mu
               : h + mu * (h < 1.0e-6 ? 1.0e-6 : (h > 1.0e32 ? 1.0e32 : h));
       sc.H[tid * Dim + tid] = static_cast<T>(damped);
@@ -346,7 +386,7 @@ __device__ inline void fused_levenberg_marquardt(const Problem &problem,
       break;
     }
     if (sc.step_accepted && it + 1 < opt.iterations) {
-      fused_linearize<Dim, T>(problem, state, sc);
+      fused_linearize_impl<Dim, T>(problem, state, sc, opt.jacobi_scaling);
     }
   }
   __syncthreads();

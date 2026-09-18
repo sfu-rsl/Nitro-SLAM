@@ -514,6 +514,15 @@ Sophus::SE3<float> Frame::GetImuPose() {
     return mTcw.inverse() * mImuCalib.mTcb;
 }
 
+void Frame::SetRelativePoseTlr(const Sophus::SE3<float> &Tlr)
+{
+    // Same four members, derived the same way, as the stereo fisheye constructor.
+    mTlr = Tlr;
+    mTrl = mTlr.inverse();
+    mRlr = mTlr.rotationMatrix();
+    mtlr = mTlr.translation();
+}
+
 Sophus::SE3f Frame::GetRelativePoseTrl() const
 {
     return mTrl;
