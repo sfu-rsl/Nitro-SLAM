@@ -121,3 +121,4 @@ evaluation/TurboMap
 *settings.local.json
 *.log
 analysis_out/
+*cuvslam*.*
