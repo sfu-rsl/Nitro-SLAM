@@ -201,6 +201,8 @@ class KeyFrame
 public:
     EIGEN_MAKE_ALIGNED_OPERATOR_NEW
     KeyFrame();
+    // Releases the GPU mirror; never runs in practice, since KeyFrames are not deleted.
+    ~KeyFrame();
     KeyFrame(Frame &F, Map* pMap, KeyFrameDatabase* pKFDB);
 
     // Pose functions

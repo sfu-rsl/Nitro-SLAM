@@ -700,6 +700,17 @@ void KeyFrame::SetBadFlag()
     mpMap->EraseKeyFrame(this);
     mpKeyFrameDB->erase(this);
 
+    // The GPU mirror is NOT released here. SetBadFlag() unlinks the keyframe but the
+    // KeyFrame object itself is never deleted (see the commented-out deletes in
+    // Map::clear), which is what makes it safe for other threads to keep pointers to it.
+    // Returning the mirror slot to the pool here broke that: the next KeyFrame could be
+    // handed the same slot and overwrite it while a kernel launched by Local Mapping or
+    // Loop Closing was still reading it through GetCudaKeyFrame(). The mirror now shares
+    // the keyframe's lifetime and is released in ~KeyFrame instead.
+}
+
+KeyFrame::~KeyFrame()
+{
     if (MappingKernelController::is_active || LoopClosingKernelController::is_active) {
         CudaKeyFrameAllocator::destroy(this);
     }
