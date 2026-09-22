@@ -102,6 +102,16 @@ void LocalMapping::Run()
 
     // LocalMappingStats stats = LocalMappingStats::getInstance();
 
+    // Keyframes whose LBA and keyframe culling were skipped, split by cause: another
+    // keyframe already waiting in the queue (Local Mapping falling behind Tracking), or
+    // a stop request from Loop Closing. Printed at shutdown.
+    int nKFsProcessed = 0;
+    int nSkippedLBAQueue = 0;
+    int nSkippedLBAStop = 0;
+    // LBAs that did run but were cut short by a new keyframe arriving (mbAbortBA).
+    // Both g2o and Graphite check the flag between iterations.
+    int nAbortedLBA = 0;
+
     while(1)
     {
         // Tracking will see that Local Mapping is busy
@@ -206,7 +216,15 @@ void LocalMapping::Run()
             int num_MPs_BA = 0;
             int num_edges_BA = 0;
 
-            if(!CheckNewKeyFrames() && !stopRequested())
+            nKFsProcessed++;
+            const bool bQueueNonEmpty = CheckNewKeyFrames();
+            const bool bStopRequested = !bQueueNonEmpty && stopRequested();
+            if (bQueueNonEmpty)
+                nSkippedLBAQueue++;
+            else if (bStopRequested)
+                nSkippedLBAStop++;
+
+            if(!bQueueNonEmpty && !bStopRequested)
             {
                 if(mpAtlas->KeyFramesInMap()>2)
                 {
@@ -277,6 +295,9 @@ void LocalMapping::Run()
                 }
 
 #endif
+
+                if(b_doneLBA && mbAbortBA)
+                    nAbortedLBA++;
 
                 // Initialize IMU here
                 if(!mpCurrentKeyFrame->GetMap()->isImuInitialized() && mbInertial)
@@ -424,6 +445,11 @@ void LocalMapping::Run()
               << " | GPU calls=" << g_triCallsGPU
               << " matches=" << g_triMatchesGPU
               << " avg=" << (g_triCallsGPU ? (double)g_triMatchesGPU/g_triCallsGPU : 0.0) << std::endl;
+
+    std::cout << "[LBA skip] kfs_processed=" << nKFsProcessed
+              << " skipped_queue=" << nSkippedLBAQueue
+              << " skipped_stop=" << nSkippedLBAStop
+              << " aborted=" << nAbortedLBA << std::endl;
 
     SetFinish();
     cleanup_liba();

@@ -548,6 +548,10 @@ void System::Shutdown()
         usleep(100000);
     }
 
+    cout << "[KF refuse] deferred_busy=" << mpTracker->mnKFDeferredBusy
+         << " requested_busy=" << mpTracker->mnKFRequestedBusy
+         << " refused_queue=" << mpTracker->mnKFRefusedQueue << endl;
+
     /*if(mpViewer)
     {
         mpViewer->RequestFinish();

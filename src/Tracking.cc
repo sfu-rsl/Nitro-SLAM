@@ -3384,8 +3384,21 @@ bool Tracking::NeedNewKeyFrame()
             thRefRatio = 0.90f;
     }
 
+    // NITRO_KF_MAX_FRAMES=<n> overrides the frame gap in c1a (normally the camera fps),
+    // allowing denser keyframe insertion while Local Mapping is busy. Used with
+    // NITRO_NO_PACING for the high-keyframe-insertion stress test. The relocalisation
+    // checks above keep using mMaxFrames.
+    static const int kKFMaxFrames = [] {
+        const char *v = getenv("NITRO_KF_MAX_FRAMES");
+        if (!v) return -1;
+        const int n = std::max(0, atoi(v));
+        std::cout << "NITRO_KF_MAX_FRAMES set: keyframe frame gap " << n << std::endl;
+        return n;
+    }();
+    const int nKFMaxFrames = (kKFMaxFrames >= 0) ? kKFMaxFrames : mMaxFrames;
+
     // Condition 1a: More than "MaxFrames" have passed from last keyframe insertion
-    const bool c1a = mCurrentFrame.mnId>=mnLastKeyFrameId+mMaxFrames;
+    const bool c1a = mCurrentFrame.mnId>=mnLastKeyFrameId+nKFMaxFrames;
     // Condition 1b: More than "MinFrames" have passed and Local Mapping is idle
     const bool c1b = ((mCurrentFrame.mnId>=mnLastKeyFrameId+mMinFrames) && bLocalMappingIdle); //mpLocalMapper->KeyframesInQueue() < 2);
     //Condition 1c: tracking is weak
@@ -3416,6 +3429,10 @@ bool Tracking::NeedNewKeyFrame()
     else
         c4=false;
 
+    if (c2 && !c1a && !c1c && !c3 && !c4 && !bLocalMappingIdle &&
+        mCurrentFrame.mnId>=mnLastKeyFrameId+mMinFrames)
+        mnKFDeferredBusy++;
+
     if(((c1a||c1b||c1c) && c2)||c3 ||c4)
     {
         // If the mapping accepts keyframes, insert keyframe.
@@ -3427,12 +3444,16 @@ bool Tracking::NeedNewKeyFrame()
         else
         {
             mpLocalMapper->InterruptBA();
+            mnKFRequestedBusy++;
             if(mSensor!=System::MONOCULAR  && mSensor!=System::IMU_MONOCULAR)
             {
                 if(mpLocalMapper->KeyframesInQueue()<3)
                     return true;
                 else
+                {
+                    mnKFRefusedQueue++;
                     return false;
+                }
             }
             else
             {

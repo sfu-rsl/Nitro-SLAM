@@ -103,6 +103,16 @@ public:
     int GetNumberDataset();
     int GetMatchesInliers();
 
+    // Keyframe decisions shaped by a busy Local Mapping (NeedNewKeyFrame):
+    //   deferred  -- tracking wanted a keyframe (c2) and only c1b, which requires Local
+    //                Mapping to be idle, could have allowed it before the frame gap
+    //   requested -- conditions met while busy, so the running BA was interrupted
+    //   refused   -- requested, but dropped because 3+ keyframes were already queued
+    // Only Tracking writes them; System::Shutdown prints them once the threads stop.
+    int mnKFDeferredBusy = 0;
+    int mnKFRequestedBusy = 0;
+    int mnKFRefusedQueue = 0;
+
     //DEBUG
     void SaveSubTrajectory(string strNameFile_frames, string strNameFile_kf, string strFolder="");
     void SaveSubTrajectory(string strNameFile_frames, string strNameFile_kf, Map* pMap);

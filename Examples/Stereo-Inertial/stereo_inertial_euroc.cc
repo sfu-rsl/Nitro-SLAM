@@ -238,6 +238,12 @@ int main(int argc, char **argv)
     size_t num_tracked = 0;
     double track_total = 0.0;
 
+    // Same switch as stereo_inertial_tum_vi.cc: NITRO_NO_PACING=1 feeds frames as fast
+    // as tracking takes them instead of sleeping to the dataset timestamps.
+    const bool bNoPacing = (getenv("NITRO_NO_PACING") != nullptr);
+    if (bNoPacing)
+        std::cout << "NITRO_NO_PACING set: feeding frames unpaced" << std::endl;
+
     cv::Mat imLeft, imRight;
     for (seq = 0; seq<num_seq; seq++)
     {
@@ -322,7 +328,7 @@ int main(int argc, char **argv)
             else if(ni>0)
                 T = tframe-vTimestampsCam[seq][ni-1];
 
-            if(ttrack<T)
+            if(!bNoPacing && ttrack<T)
                 usleep((T-ttrack)*1e6); // 1e6
         }
 
