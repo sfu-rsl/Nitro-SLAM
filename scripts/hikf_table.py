@@ -43,12 +43,16 @@ PAPER = {
 }
 
 RE_ATE = re.compile(r"absolute_translational_error\.rmse\s+([\d.eE+-]+)")
+# Frames lost during tracking never reach the trajectory file, so a run that loses
+# tracking is scored on less of the sequence -- and can post a better ATE for it.
+# compared_pose_pairs says how much was actually evaluated.
+RE_PAIRS = re.compile(r"compared_pose_pairs\s+(\d+)")
 RE_SKIP = re.compile(r"\[LBA skip\] kfs_processed=(\d+) skipped_queue=(\d+) skipped_stop=(\d+)(?: aborted=(\d+))?")
 RE_KF = re.compile(r"\[KF refuse\] deferred_busy=(\d+) requested_busy=(\d+) refused_queue=(\d+)")
 
 
 def parse_run(path):
-    ate = skip = kf = None
+    ate = skip = kf = pairs = None
     with open(path, errors="replace") as f:
         for line in f:
             m = RE_ATE.search(line)
@@ -59,11 +63,14 @@ def parse_run(path):
                 # (kfs_processed, skipped_queue, skipped_stop, aborted); aborted is None
                 # in runs from before the counter existed.
                 skip = tuple(int(x) if x is not None else None for x in m.groups())
+            m = RE_PAIRS.search(line)
+            if m:
+                pairs = int(m.group(1))
             m = RE_KF.search(line)
             if m:
                 # (deferred_busy, requested_busy, refused_queue); None before the counter.
                 kf = tuple(int(x) for x in m.groups())
-    return ate, skip, kf
+    return ate, skip, kf, pairs
 
 
 def collect(arm_dir, seq, version):
@@ -74,8 +81,8 @@ def collect(arm_dir, seq, version):
     for p in sorted(set(sum((glob.glob(x) for x in pats), []))):
         if not os.path.exists(os.path.join(os.path.dirname(p), ".batch_done")):
             continue
-        ate, skip, kf = parse_run(p)
-        runs.append({"ate": ate, "skip": skip, "kf": kf, "path": p})
+        ate, skip, kf, pairs = parse_run(p)
+        runs.append({"ate": ate, "skip": skip, "kf": kf, "pairs": pairs, "path": p})
     return runs
 
 
@@ -97,6 +104,15 @@ def main():
     a = ap.parse_args()
     version = f"hikf-{a.label}-mf{a.mf}"
 
+    # Denominator per sequence: the largest pose-pair count any configuration achieved,
+    # i.e. a run that tracked the whole sequence.
+    best_pairs = {}
+    for _, d in ARMS:
+        for seq in SEQS:
+            for r in collect(d, seq, version):
+                if r["pairs"]:
+                    best_pairs[seq] = max(best_pairs.get(seq, 0), r["pairs"])
+
     rows = []
     for name, d in ARMS:
         for seq in SEQS:
@@ -110,6 +126,8 @@ def main():
                 "ate": mean(ates),
                 "ate_med": st.median([x for x in ates if x is not None]) if any(x is not None for x in ates) else None,
                 "ate_sd": st.stdev([x for x in ates if x is not None]) if sum(x is not None for x in ates) > 1 else None,
+                "cov": mean([100.0 * r["pairs"] / best_pairs[seq]
+                             if r["pairs"] and best_pairs.get(seq) else None for r in runs]),
                 "skip_q": mean([r["skip"][1] if r["skip"] else None for r in runs]),
                 "skip_s": mean([r["skip"][2] if r["skip"] else None for r in runs]),
                 "kfs": mean([r["skip"][0] if r["skip"] else None for r in runs]),
@@ -120,7 +138,7 @@ def main():
             })
 
     print(f"High keyframe insertion ({version}): ATE RMSE (m) mean/sd/median and #skipped LBA & KF culling (mean) over runs")
-    hdr = f"{'arm':<18} {'seq':<10} {'n':>3} {'ATE':>8} {'±sd':>7} {'median':>8} {'skipped':>8}"
+    hdr = f"{'arm':<18} {'seq':<10} {'n':>3} {'ATE':>8} {'±sd':>7} {'median':>8} {'cov%':>6} {'skipped':>8}"
     if a.detail:
         hdr += f" {'stop':>6} {'abort':>6} {'KFs':>7} {'defer':>7} {'refuse':>6}"
     hdr += f" | {'paper ATE':>9} {'paper skip':>10}"
@@ -128,7 +146,7 @@ def main():
     print("-" * len(hdr))
     for r in rows:
         p = PAPER.get(r["arm"], {}).get(r["seq"])
-        line = (f"{r['arm']:<18} {r['seq']:<10} {r['n']:>3} {fmt(r['ate']):>8} {fmt(r['ate_sd']):>7} {fmt(r['ate_med']):>8} "
+        line = (f"{r['arm']:<18} {r['seq']:<10} {r['n']:>3} {fmt(r['ate']):>8} {fmt(r['ate_sd']):>7} {fmt(r['ate_med']):>8} {fmt(r['cov'], 1):>6} "
                 f"{fmt(r['skip_q'], 1):>8}")
         if a.detail:
             line += (f" {fmt(r['skip_s'], 1):>6} {fmt(r['abort'], 1):>6} {fmt(r['kfs'], 0):>7}"
@@ -150,12 +168,12 @@ def main():
         import csv
         with open(a.csv, "w", newline="") as f:
             w = csv.writer(f)
-            w.writerow(["arm", "seq", "runs", "ate_mean", "ate_sd", "ate_median", "skipped_queue_mean",
+            w.writerow(["arm", "seq", "runs", "ate_mean", "ate_sd", "ate_median", "trajectory_coverage_pct", "skipped_queue_mean",
                         "skipped_stop_mean", "aborted_mean", "kfs_processed_mean", "kf_deferred_busy_mean",
                         "kf_refused_queue_mean", "paper_ate", "paper_skipped"])
             for r in rows:
                 p = PAPER.get(r["arm"], {}).get(r["seq"], (None, None))
-                w.writerow([r["arm"], r["seq"], r["n"], r["ate"], r["ate_sd"], r["ate_med"], r["skip_q"],
+                w.writerow([r["arm"], r["seq"], r["n"], r["ate"], r["ate_sd"], r["ate_med"], r["cov"], r["skip_q"],
                             r["skip_s"], r["abort"], r["kfs"], r["deferred"], r["refused"], p[0], p[1]])
         print(f"wrote {a.csv}")
 

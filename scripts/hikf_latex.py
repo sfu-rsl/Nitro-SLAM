@@ -1,17 +1,15 @@
 #!/usr/bin/env python3
 """LaTeX table for the high-keyframe-insertion stress test (run_hikf.sh).
 
-Rows are grouped by tracking backend; within each group the right-hand columns are
-the left-hand configuration with TurboMap added, isolating TurboMap's effect:
+CPU tracking throughout: ORB-SLAM3 against ORB-SLAM3 + TurboMap, isolating TurboMap.
 
-  CPU tracking: ORB-SLAM3  -> TurboMap
-  GPU tracking: FastTrack  -> FastTrack&TurboMap
-
-Each cell gives ATE RMSE (m), mean or median over completed runs; LBA + KF culling
-skipped because another keyframe was queued (the TurboMap paper's metric), mean; and
-full LBA (%), mean -- the share of processed keyframes whose LBA was neither skipped
-nor aborted by a keyframe request from Tracking. It combines skips with aborts, which
-is how Local Mapping falls behind without the skip count showing it.
+Each cell gives ATE RMSE (m), mean or median over completed runs, and three means:
+LBA + KF culling skipped because another keyframe was queued (the TurboMap paper's
+metric); full LBA (%), the share of processed keyframes whose LBA was neither skipped
+nor aborted by a keyframe request from Tracking (skips alone hide the aborts); and
+rejected keyframes -- frames where Tracking wanted a keyframe but did not create one
+because Local Mapping was busy. Rejections for a full queue (3+ keyframes waiting)
+are counted too but are 0 throughout: Local Mapping drains the queue by skipping.
 Tracking failures and map resets were considered and rejected: failures are erratic
 run to run, and on TUM-VI every configuration resets 1-2 times during IMU
 initialisation regardless of load.
@@ -32,15 +30,12 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from hikf_table import SEQS, collect  # noqa: E402
 
-# (row label, baseline result dir, + TurboMap result dir)
-GROUPS = [("CPU", "ORB-SLAM3", "TurboMap"),
-          ("GPU", "FastTrack", "FastTrack&TurboMap")]
+# (baseline result dir, + TurboMap result dir)
+BASELINE, OURS = "ORB-SLAM3", "TurboMap"
 
-CAPTION = (r"High keyframe insertion: ATE RMSE (m, {stat} of up to 5 runs; a few cells "
-           r"have fewer, where a run crashed), skipped LBA \& "
-           r"KF culling and keyframes with a complete LBA (\%) (means). Baseline is ORB-SLAM3 "
-           r"(CPU tracking) or FastTrack (GPU tracking, $\approx$2$\times$ faster, "
-           r"doubling the keyframe rate).")
+CAPTION = (r"High keyframe insertion (unpaced, reduced keyframe interval): ATE RMSE "
+           r"(m, {stat} of 5 runs), skipped LBA \& KF culling, keyframes with a complete "
+           r"LBA (\%), and keyframes rejected because Local Mapping was busy (means).")
 
 
 def full_lba_pct(skip):
@@ -57,10 +52,14 @@ def cell(arm_dir, seq, version, stat):
               f"{len(skips)} with skip count", file=sys.stderr)
     full = [full_lba_pct(r["skip"]) for r in runs if r["skip"]]
     full = [x for x in full if x is not None]
+    # kf = (deferred_busy, requested_busy, refused_queue); deferred_busy is the count of
+    # keyframes Tracking wanted but did not create because Local Mapping was busy.
+    rej = [r["kf"][0] + r["kf"][2] for r in runs if r["kf"]]
     agg = st.median if stat == "median" else st.mean
     return (agg(ates) if ates else None,
             st.mean(skips) if skips else None,
             st.mean(full) if full else None,
+            st.mean(rej) if rej else None,
             len(runs))
 
 
@@ -70,29 +69,27 @@ def fmt(x, nd):
 
 def table(version, stat):
     lines = [
-        r"% requires \usepackage{booktabs,multirow}",
+        r"% requires \usepackage{booktabs}",
         r"\begin{table}[t]",
         r"\centering",
         rf"\caption{{{CAPTION.format(stat=stat)}}}",
         r"\label{tab:hikf}",
         r"\setlength{\tabcolsep}{3pt}",
-        r"\begin{tabular}{ll rrr rrr}",
+        r"\begin{tabular}{l rrrr rrrr}",
         r"\toprule",
-        r" & & \multicolumn{3}{c}{Baseline} & \multicolumn{3}{c}{+ TurboMap} \\",
-        r"\cmidrule(lr){3-5}\cmidrule(lr){6-8}",
-        r"Tracking & Sequence & ATE & Skip & LBA\% & ATE & Skip & LBA\% \\",
+        r" & \multicolumn{4}{c}{ORB-SLAM3} & \multicolumn{4}{c}{+ TurboMap} \\",
+        r"\cmidrule(lr){2-5}\cmidrule(lr){6-9}",
+        r"Sequence & ATE & Skip & LBA\% & Rej. & ATE & Skip & LBA\% & Rej. \\",
+        r"\midrule",
     ]
-    for label, base, ours in GROUPS:
-        lines.append(r"\midrule")
-        for i, seq in enumerate(SEQS):
-            b_ate, b_skip, b_full, b_n = cell(base, seq, version, stat)
-            o_ate, o_skip, o_full, o_n = cell(ours, seq, version, stat)
-            for arm, n in ((base, b_n), (ours, o_n)):
-                if n != 5:
-                    print(f"warning: {arm} {seq}: {n} completed runs", file=sys.stderr)
-            first = rf"\multirow{{{len(SEQS)}}}{{*}}{{{label}}}" if i == 0 else ""
-            lines.append(f"{first} & {seq} & {fmt(b_ate, 3)} & {fmt(b_skip, 1)} & {fmt(b_full, 1)} & "
-                         f"{fmt(o_ate, 3)} & {fmt(o_skip, 1)} & {fmt(o_full, 1)} \\\\")
+    for seq in SEQS:
+        b_ate, b_skip, b_full, b_rej, b_n = cell(BASELINE, seq, version, stat)
+        o_ate, o_skip, o_full, o_rej, o_n = cell(OURS, seq, version, stat)
+        for arm, n in ((BASELINE, b_n), (OURS, o_n)):
+            if n != 5:
+                print(f"warning: {arm} {seq}: {n} completed runs", file=sys.stderr)
+        lines.append(f"{seq} & {fmt(b_ate, 3)} & {fmt(b_skip, 1)} & {fmt(b_full, 1)} & {fmt(b_rej, 0)} & "
+                     f"{fmt(o_ate, 3)} & {fmt(o_skip, 1)} & {fmt(o_full, 1)} & {fmt(o_rej, 0)} \\\\")
     lines += [r"\bottomrule", r"\end{tabular}", r"\end{table}"]
     return "\n".join(lines) + "\n"
 
