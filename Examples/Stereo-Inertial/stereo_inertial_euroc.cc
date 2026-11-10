@@ -309,6 +309,13 @@ int main(int argc, char **argv)
             // Keyed on the Frame id, not the loop counter: the Tracking sub-timers key on
             // Frame::mnId, which keeps counting across sequences while ni restarts.
             TrackingStats::getInstance().tracking_time.emplace_back(SLAM.GetCurrentFrameId(), t_track);
+            // Absolute window for the same call tracking_time measures, so a frame can
+            // be told apart from one a loop correction ran across; LoopClosing records
+            // its windows off this same steady_clock. t_track additionally covers the
+            // rectification and resize done just before t1, which this window does not.
+            TrackingStats::getInstance().frame_window.emplace_back(SLAM.GetCurrentFrameId(),
+                std::chrono::duration_cast<std::chrono::nanoseconds>(t1.time_since_epoch()).count(),
+                std::chrono::duration_cast<std::chrono::nanoseconds>(t2.time_since_epoch()).count());
 #endif
 
 #ifdef REGISTER_TIMES

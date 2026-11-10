@@ -30,6 +30,7 @@ consequence.
 Usage:
     ./error_strips.py <desktop euroc root> --dataset euroc
     ./error_strips.py <root> ... --out analysis_out/v2 --cache /tmp/errcache
+    ./error_strips.py <root> ... --cache /tmp/errcache --large-font   # *_lf.png
 """
 import argparse
 import os
@@ -41,7 +42,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 from median_trajectory import find_sequences, run_key, trajectory_files
-from tracking_breakdown import GRID, INK, INK_MUTED, SLOTS, SURFACE
+from tracking_breakdown import GRID, INK, INK_MUTED, SLOTS, SURFACE, scale_text
 from tracking_comparison import BASELINE, CONTENDER, GROUP_ORDER, group_of
 
 SYSTEM_COLOR = {BASELINE: SLOTS[0], CONTENDER: SLOTS[1]}
@@ -51,6 +52,10 @@ FAMILIES = ['MH', 'V1', 'V2', 'room', 'corridor', 'magistrale', 'outdoors', 'sli
 # Errors are positive but can round to zero; the axis is logarithmic, so anything
 # below this is drawn at this value rather than dropped.
 FLOOR_M = 1e-4
+# --large-font multiplies every text size by this, for a copy that stays legible
+# when the figure is shrunk to a column or projected on a slide. Box and whisker
+# strokes are thickened by the same factor so they hold up beside the text.
+LARGE_FONT = 1.5
 
 
 def family_key(sequence):
@@ -175,7 +180,7 @@ def regroup(data):
             for label, systems in out.items()}
 
 
-def figure(data, out_file, title=None, order=None):
+def figure(data, out_file, title=None, order=None, large_font=False):
     """Two boxes per sequence, systems side by side, on a log error axis."""
     sequences = ([c for c in order if c in data] if order
                  else sorted(data, key=family_key))
@@ -187,6 +192,7 @@ def figure(data, out_file, title=None, order=None):
     fig.patch.set_facecolor(SURFACE)
     ax.set_facecolor(SURFACE)
 
+    lw = LARGE_FONT if large_font else 1.0
     half = 0.19          # box centres sit this far either side of the tick
     for si, system in enumerate(SYSTEM_ORDER):
         values, positions = [], []
@@ -201,13 +207,17 @@ def figure(data, out_file, title=None, order=None):
         colour = SYSTEM_COLOR[system]
         ax.boxplot(values, positions=positions, widths=0.30, whis=(5, 95),
                    showfliers=False, patch_artist=True, manage_ticks=False,
-                   boxprops=dict(facecolor=colour, edgecolor=colour, linewidth=0.8),
-                   whiskerprops=dict(color=colour, linewidth=0.9),
-                   capprops=dict(color=colour, linewidth=0.9),
-                   medianprops=dict(color=INK, linewidth=1.3))
+                   boxprops=dict(facecolor=colour, edgecolor=colour,
+                                 linewidth=0.8 * lw),
+                   whiskerprops=dict(color=colour, linewidth=0.9 * lw),
+                   capprops=dict(color=colour, linewidth=0.9 * lw),
+                   medianprops=dict(color=INK, linewidth=1.3 * lw))
 
     ax.set_yscale('log')
-    ax.set_ylabel('per-pose translational error (m)', color=INK)
+    # At the large size the full label is longer than the axes is tall and would be
+    # clipped, so it drops the "per-pose" qualifier rather than the aspect ratio.
+    ax.set_ylabel('translational error (m)' if large_font
+                  else 'per-pose translational error (m)', color=INK)
     ax.set_xticks(range(len(sequences)))
     ax.set_xticklabels(sequences, rotation=45, ha='right', fontsize=9, color=INK)
     ax.set_xlim(-0.6, len(sequences) - 0.4)
@@ -222,11 +232,20 @@ def figure(data, out_file, title=None, order=None):
     handles = [plt.Rectangle((0, 0), 1, 1, facecolor=SYSTEM_COLOR[s],
                              edgecolor=SYSTEM_COLOR[s], label=s)
                for s in SYSTEM_ORDER]
-    handles.append(plt.Line2D([], [], color=INK, linewidth=1.3, label='median'))
-    ax.legend(handles=handles, loc='upper left', bbox_to_anchor=(0, 1.14),
-              ncol=3, frameon=False, fontsize=9, labelcolor=INK)
+    handles.append(plt.Line2D([], [], color=INK, linewidth=1.3 * lw, label='median'))
+    if large_font:
+        # Anchored by its bottom edge, so the grown legend rises away from the
+        # axes rather than reaching down into the boxes.
+        ax.legend(handles=handles, loc='lower left', bbox_to_anchor=(0, 1.02),
+                  ncol=3, frameon=False, fontsize=9, labelcolor=INK,
+                  borderaxespad=0)
+    else:
+        ax.legend(handles=handles, loc='upper left', bbox_to_anchor=(0, 1.14),
+                  ncol=3, frameon=False, fontsize=9, labelcolor=INK)
     if title:
-        ax.set_title(title, color=INK, pad=26)
+        ax.set_title(title, color=INK, pad=26 * lw)
+    if large_font:
+        scale_text(fig, LARGE_FONT)
 
     os.makedirs(os.path.dirname(out_file) or '.', exist_ok=True)
     fig.savefig(out_file, dpi=400, facecolor=SURFACE, bbox_inches='tight')
@@ -245,6 +264,9 @@ def main():
                     help='root holding the tumvi/ and EuRoc/ dataset trees')
     ap.add_argument('--cache', help='directory to keep per-run error vectors in')
     ap.add_argument('--title', help='title for the figure')
+    ap.add_argument('--large-font', action='store_true',
+                    help=f'scale text and strokes {LARGE_FONT}x and write the '
+                         f'figure with an _lf suffix')
     ap.add_argument('--group', action='store_true',
                     help='pool each sequence family (Machine Hall, Vicon 1, Room, '
                          '...) into one pair of boxes instead of one pair per '
@@ -272,8 +294,9 @@ def main():
         print(f'  {sequence:14}{a:9.4f} {b:9.4f} {a / max(b, 1e-12):8.2f}x '
               f'{len(d[BASELINE]):7d} {len(d[CONTENDER]):7d}')
 
-    path = os.path.join(args.out, f'{args.name}_{args.platform}.png')
-    if figure(data, path, args.title, order):
+    suffix = '_lf' if args.large_font else ''
+    path = os.path.join(args.out, f'{args.name}_{args.platform}{suffix}.png')
+    if figure(data, path, args.title, order, args.large_font):
         print(f'\nwrote {path}')
         return 0
     return 1

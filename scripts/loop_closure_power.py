@@ -36,6 +36,7 @@ Usage:
     ./loop_closure_power.py
     ./loop_closure_power.py --sequence outdoors5 --window 600 800   # zoom in
     ./loop_closure_power.py --run ORB-SLAM3=<dir> --run Nitro-SLAM=<dir>
+    ./loop_closure_power.py --large-font      # loop_closure_power_<seq>_lf.png
 """
 
 import argparse
@@ -82,6 +83,10 @@ WIDE_FIGSIZE = (1.45 * len(GROUP_ORDER), 4.0 + 0.55)
 # use, which come out small on a canvas this wide. The grouped comparisons scale
 # theirs by 1.5 for exactly that reason, so this matches them.
 FONT_SCALE = 1.5
+# --large-font multiplies the scale above by this, for a copy that stays legible
+# when the figure is shrunk to a column or projected on a slide. The traces are
+# thickened by the same factor so the lines do not look thin against the text.
+LARGE_FONT = 1.5
 
 
 def find_run(roots, system, sequence):
@@ -227,8 +232,9 @@ def plot(series, events, args, out_path):
     # One marker per system, in that system's colour, because the two runs close the
     # loop at different points in the sequence (707 s and 739 s on outdoors5). They
     # sit behind the traces: a marker is not a series.
+    lw = LARGE_FONT if args.large_font else 1.0
     for system, event_t in events.items():
-        ax.axvline(event_t, color=COLORS.get(system, INK_MUTED), linewidth=0.9,
+        ax.axvline(event_t, color=COLORS.get(system, INK_MUTED), linewidth=0.9 * lw,
                    linestyle=(0, (4, 3)), alpha=0.7, zorder=1)
     if events:
         # 30 s apart on a 1150 s axis is close enough that two labels would collide,
@@ -239,9 +245,9 @@ def plot(series, events, args, out_path):
 
     for system, (t, watts, _) in series.items():
         color = COLORS.get(system, SLOTS[0])
-        ax.plot(t, watts, color=color, linewidth=0.5, alpha=0.25, zorder=2)
+        ax.plot(t, watts, color=color, linewidth=0.5 * lw, alpha=0.25, zorder=2)
         ax.plot(t, rolling_mean(watts, t, args.smooth), color=color,
-                linewidth=2.0, zorder=3, label=system,
+                linewidth=2.0 * lw, zorder=3, label=system,
                 solid_capstyle='round', solid_joinstyle='round')
 
     lo = args.window[0] if args.window else 0.0
@@ -261,10 +267,11 @@ def plot(series, events, args, out_path):
     if args.note:
         fig.text(0.011, 0.008, args.note, fontsize=8.5, color=INK_MUTED, style='italic')
 
-    if args.font_scale != 1.0:
+    font_scale = args.font_scale * (LARGE_FONT if args.large_font else 1.0)
+    if font_scale != 1.0:
         # Last, so it scales what was drawn rather than what the sizes imply, and
         # before tight_layout, so the layout is made around the grown text.
-        scale_text(fig, args.font_scale)
+        scale_text(fig, font_scale)
     # The grouped comparisons fill their canvas, so their tight bbox comes out at
     # the figure size plus padding. A lone axes does not -- tight would trim the
     # default margins and hand back a narrower image than the figsize asked for --
@@ -304,6 +311,9 @@ def main():
     ap.add_argument('--font-scale', type=float, default=FONT_SCALE,
                     help='multiply every text size by this (default: %(default)s, '
                          'what the grouped comparisons use)')
+    ap.add_argument('--large-font', action='store_true',
+                    help=f'scale text and lines a further {LARGE_FONT}x and write '
+                         f'the figure with an _lf suffix')
     ap.add_argument('--note', default='', help='italic note under the figure')
     # This script's default pairing is the v2 comparison (v1 ORB-SLAM3 baseline
     # against the new Nitro-SLAM sweep), so its figures land beside the rest of
@@ -381,7 +391,9 @@ def main():
                 print(f'  {label:<20}not run{over}')
 
     os.makedirs(args.out, exist_ok=True)
-    out_path = os.path.join(args.out, f'loop_closure_power_{args.sequence}.png')
+    suffix = '_lf' if args.large_font else ''
+    out_path = os.path.join(args.out,
+                            f'loop_closure_power_{args.sequence}{suffix}.png')
     plot(series, events, args, out_path)
     print(f'\nwrote {out_path}')
     return 0

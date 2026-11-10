@@ -5,6 +5,7 @@
 #include <iostream>
 #include <fstream>
 #include <string>
+#include <tuple>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include "Stats/StatsInterface.h"
@@ -49,6 +50,14 @@ class TrackingStats: public StatsInterface {
         std::vector<std::pair<long unsigned int, int>> num_slp_matches;       // SearchByProjection result
         std::vector<std::pair<long unsigned int, int>> num_matches_inliers;   // survivors of PoseOptimization
         std::vector<std::pair<long unsigned int, int>> localmapper_queue;     // KFs waiting in LocalMapping
+
+        // (frame id, start ns, end ns) for the whole per-frame tracking call, on the
+        // same steady_clock LoopClosing records its windows with. A frame counts as
+        // overlapped by a loop closure when the two windows intersect.
+        std::vector<std::tuple<long unsigned int, long long, long long>> frame_window;
+        // (frame id, ns) for every frame on which NeedNewKeyFrame() declined to insert
+        // a keyframe solely because a loop correction had Local Mapping stopped.
+        std::vector<std::pair<long unsigned int, long long>> kfRefusedLMStop;
 
         double orbExtraction_init_time;
         double stereoMatch_init_time;

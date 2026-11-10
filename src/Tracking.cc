@@ -3314,6 +3314,16 @@ bool Tracking::NeedNewKeyFrame()
         {
             std::cout << "NeedNewKeyFrame: localmap stopped" << std::endl;
         }*/
+#ifdef REGISTER_TRACKING_STATS
+        // Refusals attributable to a loop correction, as opposed to mnKFRefusedQueue's
+        // "Local Mapping is merely busy". Timestamped rather than counted so each one
+        // can be matched against the CorrectLoop() window that caused it; the rest of
+        // the predicate is deliberately not evaluated here, since it has side effects
+        // (InterruptBA(), the deferred/requested counters) that would perturb the run.
+        TrackingStats::getInstance().kfRefusedLMStop.emplace_back(mCurrentFrame.mnId,
+            std::chrono::duration_cast<std::chrono::nanoseconds>(
+                std::chrono::steady_clock::now().time_since_epoch()).count());
+#endif
         return false;
     }
 

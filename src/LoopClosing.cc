@@ -344,6 +344,9 @@ void LoopClosing::Run()
     std::chrono::steady_clock::time_point time_EndLoopCorrection = std::chrono::steady_clock::now();
     double timeLoopCorrection = std::chrono::duration_cast<std::chrono::duration<double,std::milli> >(time_EndLoopCorrection - time_StartLoopCorrection).count();
     LoopClosingStats::getInstance().loopCorrection_time.emplace_back(mpCurrentKF->mnId, timeLoopCorrection);
+    LoopClosingStats::getInstance().loopCorrection_window.emplace_back(mpCurrentKF->mnId,
+        std::chrono::duration_cast<std::chrono::nanoseconds>(time_StartLoopCorrection.time_since_epoch()).count(),
+        std::chrono::duration_cast<std::chrono::nanoseconds>(time_EndLoopCorrection.time_since_epoch()).count());
 #endif
 #ifdef REGISTER_TIMES
                         std::chrono::steady_clock::time_point time_EndLoop = std::chrono::steady_clock::now();
@@ -1413,6 +1416,13 @@ void LoopClosing::CorrectLoop()
 {
     //cout << "Loop detected!" << endl;
 
+#ifdef REGISTER_LOOP_CLOSING_STATS
+    // Local Mapping is frozen for the whole of this function. Tracking's keyframe gate
+    // is isStopped() || stopRequested(), so it closes from the RequestStop() below --
+    // not from the point Local Mapping actually comes to rest -- and the two differ by
+    // the EmptyQueue()/handshake tail. Record both edges and let the consumer choose.
+    const std::chrono::steady_clock::time_point time_LMStopRequested = std::chrono::steady_clock::now();
+#endif
     // Send a stop signal to Local Mapping
     // Avoid new keyframes are inserted while correcting the loop
     mpLocalMapper->RequestStop();
@@ -1440,6 +1450,9 @@ void LoopClosing::CorrectLoop()
     {
         usleep(1000);
     }
+#ifdef REGISTER_LOOP_CLOSING_STATS
+    const std::chrono::steady_clock::time_point time_LMStopped = std::chrono::steady_clock::now();
+#endif
 
     // Ensure current keyframe is updated
     //cout << "Start updating connections" << endl;
@@ -1701,6 +1714,17 @@ void LoopClosing::CorrectLoop()
         mpThreadGBA = new thread(&LoopClosing::RunGlobalBundleAdjustment, this, pLoopMap, mpCurrentKF->mnId);
     }
 
+#ifdef REGISTER_LOOP_CLOSING_STATS
+    {
+        const std::chrono::steady_clock::time_point time_LMRelease = std::chrono::steady_clock::now();
+        const auto ns = [](const std::chrono::steady_clock::time_point &t) {
+            return std::chrono::duration_cast<std::chrono::nanoseconds>(t.time_since_epoch()).count();
+        };
+        LoopClosingStats &stats = LoopClosingStats::getInstance();
+        stats.lmStopRequested_window.emplace_back(mpCurrentKF->mnId, ns(time_LMStopRequested), ns(time_LMRelease));
+        stats.lmStopped_window.emplace_back(mpCurrentKF->mnId, ns(time_LMStopped), ns(time_LMRelease));
+    }
+#endif
     // Loop closed. Release Local Mapping.
     mpLocalMapper->Release();    
 

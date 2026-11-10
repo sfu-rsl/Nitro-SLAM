@@ -15,6 +15,15 @@ void dumpSeries(const string &path, const S &s) {
     myfile.close();
 }
 
+template <typename S>
+void dumpWindows(const string &path, const S &s) {
+    std::ofstream myfile(path);
+    for (const auto &w : s) {
+        myfile << std::get<0>(w) << ": " << std::get<1>(w) << " " << std::get<2>(w) << std::endl;
+    }
+    myfile.close();
+}
+
 } // namespace
 #endif
 
@@ -57,6 +66,11 @@ void LoopClosingStats::saveStats(const string &file_path) {
     dumpSeries(data_path + "/mergeDetected.txt",           mergeDetected);
     dumpSeries(data_path + "/numKFs.txt",                  numKFs);
     dumpSeries(data_path + "/numMPs.txt",                  numMPs);
+
+    // "<kfId>: <startNs> <endNs>", steady_clock, shared with Tracking's frame_window.
+    dumpWindows(data_path + "/loopCorrection_window.txt",   loopCorrection_window);
+    dumpWindows(data_path + "/lmStopRequested_window.txt",  lmStopRequested_window);
+    dumpWindows(data_path + "/lmStopped_window.txt",        lmStopped_window);
 
     int nClosed = 0;
     for (const auto &f : loopClosed) nClosed += f.second;

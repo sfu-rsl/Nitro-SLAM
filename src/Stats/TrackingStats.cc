@@ -160,6 +160,18 @@ void TrackingStats::saveStats(const string &file_path) {
     myfile << "poseEstimation_initialization_time: " << poseEstimation_init_time << std::endl;
     myfile.close();
 
+    myfile.open(data_path + "/frame_window.txt");
+    for (const auto& w : frame_window) {
+        myfile << std::get<0>(w) << ": " << std::get<1>(w) << " " << std::get<2>(w) << std::endl;
+    }
+    myfile.close();
+
+    myfile.open(data_path + "/kfRefusedLMStop.txt");
+    for (const auto& p : kfRefusedLMStop) {
+        myfile << p.first << ": " << p.second << std::endl;
+    }
+    myfile.close();
+
     myfile.open(data_path + "/num_frames_lost.txt");
     myfile << num_frames_lost << std::endl;
     myfile.close(); 

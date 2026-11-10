@@ -6,6 +6,7 @@
 #include <fstream>
 #include <string>
 #include <utility>
+#include <tuple>
 #include <mutex>
 #include <algorithm>
 #include <sys/stat.h>
@@ -32,6 +33,24 @@ class LoopClosingStats: public StatsInterface {
         typedef std::vector<std::pair<unsigned long, long unsigned int>> CountSeries;
 
         typedef std::vector<std::pair<unsigned long, int>> FlagSeries;
+
+        // Absolute steady_clock windows, (keyframe id, start ns, end ns). Durations
+        // alone cannot say which tracking frames a loop correction ran across, and the
+        // two live on different threads, so the windows are stored as timestamps from
+        // the one clock both threads read. Consumers intersect these with Tracking's
+        // frame_window.
+        typedef std::vector<std::tuple<unsigned long, long long, long long>> WindowSeries;
+
+        // CorrectLoop() entry -> exit: the loop closure event a tracking frame is
+        // "overlapped" by.
+        WindowSeries loopCorrection_window;
+        // RequestStop() -> Release(). NeedNewKeyFrame()'s gate is
+        // isStopped() || stopRequested(), so this is the window over which Tracking
+        // refuses keyframes, and the one kfRefusedLMStop entries fall inside.
+        WindowSeries lmStopRequested_window;
+        // Local Mapping confirmed stopped -> Release(), i.e. the window excluding the
+        // EmptyQueue() and stop-handshake tail at the head of CorrectLoop().
+        WindowSeries lmStopped_window;
 
         // Whole-iteration total, recorded on EVERY iteration that dequeued a keyframe --
         // not just the ones that corrected a loop. This is the denominator for "other".
