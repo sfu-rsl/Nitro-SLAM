@@ -171,15 +171,22 @@ def collect(roots, systems, machine, sequences, kernel=None):
     return agg, found
 
 
-def figure(agg, systems, datasets, path):
-    """One plot: a CPU bar and a GPU bar per sequence, per system."""
+def figure(agg, systems, datasets, path, kf_above=False):
+    """One plot: a CPU bar and a GPU bar per sequence, per system.
+
+    kf_above moves the keyframe count off the axis and stands it on top of each
+    sequence's bars, as mean over spread -- the same reading the
+    sideways figure gives at the end of its rows.
+    """
     # Rotation buys horizontal room when the axis is crowded and costs legibility
     # when it is not, so it follows the sequence count -- and the width follows the
     # rotation: upright labels need room to print their names side by side, tilted
     # ones can pack tighter. The wide many-sequence figure is unchanged.
     tilt = len(datasets) > 8
-    fig, ax = plt.subplots(figsize=((0.42 if tilt else 0.95) * len(datasets) + 2.0,
-                                    4.4))
+    # kf_above spends a little more width per sequence, so neighbouring
+    # keyframe counts at similar heights do not run into each other.
+    pitch = 0.47 if kf_above else 0.42 if tilt else 0.95
+    fig, ax = plt.subplots(figsize=(pitch * len(datasets) + 2.0, 4.4))
     fig.patch.set_facecolor(SURFACE)
 
     bars = [(system, metric) for system in systems for metric in METRICS]
@@ -214,7 +221,29 @@ def figure(agg, systems, datasets, path):
     for dataset in datasets:
         kfs = [agg[(s, dataset)]['n_kfs'][0] for s in systems
                if (s, dataset) in agg and agg[(s, dataset)].get('n_kfs')]
-        labels.append(f'{dataset}\n{np.mean(kfs):,.0f} KF' if kfs else dataset)
+        labels.append(f'{dataset}\n{np.mean(kfs):,.0f} KF' if kfs and not kf_above
+                      else dataset)
+    if kf_above:
+        reach = 0.0
+        for di, dataset in enumerate(datasets):
+            entry = next((agg[(s, dataset)] for s in systems if (s, dataset) in agg),
+                         None)
+            if not entry or not entry.get('n_kfs'):
+                continue
+            top = max(entry[f'{m["key"]}_peak'][0] for s in systems
+                      if (s, dataset) in agg for m in METRICS)
+            mean, std = entry['n_kfs']
+            # Two short lines rather than one long one: a group is under half an
+            # inch wide, and the count and its spread side by side would run into
+            # the next sequence's label.
+            text = f'{mean:,.0f} KF\n± {std:,.0f}' if std else f'{mean:,.0f} KF'
+            pad = 0.015 * ax.get_ylim()[1]
+            ax.text(di, top + pad, text, ha='center', va='bottom', fontsize=7.5,
+                    color=INK_MUTED, linespacing=1.1)
+            reach = max(reach, top)
+        # Headroom for the tallest bar's label.
+        if reach:
+            ax.set_ylim(0, reach * 1.14)
 
     ax.set_xticks(range(len(datasets)))
     ax.set_xticklabels(labels, fontsize=9, color=INK,
@@ -563,6 +592,13 @@ def build(args, platform, agg, datasets):
     draw = figure_horizontal if args.all_sequences else figure
     draw(agg, args.systems, datasets, path)
     print(f'  wrote {path}')
+    if args.all_sequences:
+        # The full sweep again as upright bars across a wide landscape figure, for
+        # layouts that have width to spare rather than height.
+        stem, ext = os.path.splitext(path)
+        h_path = f'{stem}_horizontal{ext}'
+        figure(agg, args.systems, datasets, h_path, kf_above=True)
+        print(f'  wrote {h_path}')
     if args.csv:
         csv_path = out_path(args.out, name.replace('.png', '.csv'), platform)
         write_csv(csv_path, agg, args.systems, datasets)
